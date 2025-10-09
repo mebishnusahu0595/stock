@@ -1,0 +1,873 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Professional Trading Terminal | Live Market Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/auto-trading-enhancements.css') }}">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Login Modal -->
+    <div id="loginModal" class="modal">
+        <div class="modal-content">
+            <div class="login-container">
+                <div class="login-header">
+                    <i class="fas fa-shield-alt"></i>
+                    <h2>Secure Login</h2>
+                    <p>Access your trading terminal</p>
+                </div>
+                <form id="loginForm">
+                    <div class="form-group">
+                        <label for="username">
+                            <i class="fas fa-user"></i>
+                            Username
+                        </label>
+                        <input type="text" id="username" name="username" required placeholder="Enter your username">
+                    </div>
+                    <div class="form-group">
+                        <label for="password">
+                            <i class="fas fa-lock"></i>
+                            Password
+                        </label>
+                        <input type="password" id="password" name="password" required placeholder="Enter your password">
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-sign-in-alt"></i>
+                        Sign In
+                    </button>
+                </form>
+                <div id="loginError" class="error-message"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Zerodha Connection Modal -->
+    <div id="zerodhaModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="zerodha-container">
+                <div class="modal-header">
+                    <i class="fas fa-link"></i>
+                    <h2>Connect to Zerodha</h2>
+                    <p>Establish secure connection to your trading account</p>
+                </div>
+                <div class="zerodha-steps">
+                    <div class="step">
+                        <div class="step-icon">
+                            <i class="fas fa-sign-in-alt"></i>
+                        </div>
+                        <div class="step-content">
+                            <h4>Step 1: Login to Zerodha</h4>
+                            <p>Click the button below to open Zerodha login page</p>
+                            <button id="zerodhaLoginBtn" class="btn btn-primary">
+                                <i class="fas fa-external-link-alt"></i>
+                                Open Zerodha Login
+                            </button>
+                        </div>
+                    </div>
+                    <div class="step">
+                        <div class="step-icon">
+                            <i class="fas fa-cog"></i>
+                        </div>
+                        <div class="step-content">
+                            <h4>Step 2: API Configuration</h4>
+                            <p>Make sure your API keys are configured in the backend</p>
+                            <div class="config-status">
+                                <div class="status-item">
+                                    <i class="fas fa-key"></i>
+                                    <span id="apiKeyStatus">API Key: Not Configured</span>
+                                </div>
+                                <div class="status-item">
+                                    <i class="fas fa-shield-alt"></i>
+                                    <span id="accessTokenStatus">Access Token: Not Available</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="step">
+                        <div class="step-icon">
+                            <i class="fas fa-wifi"></i>
+                        </div>
+                        <div class="step-content">
+                            <h4>Step 3: Connection Status</h4>
+                            <div id="connectionStatus" class="status-display">
+                                <span class="status-text">
+                                    <i class="fas fa-circle status-dot"></i>
+                                    Disconnected
+                                </span>
+                                <button id="checkConnectionBtn" class="btn btn-secondary btn-small">
+                                    <i class="fas fa-sync"></i>
+                                    Check Status
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button id="closeZerodhaModal" class="btn btn-secondary">
+                        <i class="fas fa-times"></i>
+                        Close
+                    </button>
+                    <button id="refreshZerodhaStatus" class="btn btn-warning">
+                        <i class="fas fa-sync-alt"></i>
+                        Refresh Status
+                    </button>
+                </div>
+                <div id="zerodhaError" class="error-message"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Trading Alert Modal -->
+    <div id="tradingAlertModal" class="trading-alert-modal" style="display: none;">
+        <div class="trading-alert-content">
+            <div class="alert-icon">
+                <i class="fas fa-exclamation-triangle"></i>
+            </div>
+            <div class="alert-message">
+                <h3 id="alertTitle">Trading Alert</h3>
+                <p id="alertMessage">Please check your setup</p>
+            </div>
+            <div class="alert-actions">
+                <button id="setupZerodhaBtn" class="btn btn-primary">
+                    <i class="fas fa-cog"></i>
+                    Setup Zerodha
+                </button>
+                <button id="dismissAlertBtn" class="btn btn-outline">
+                    <i class="fas fa-times"></i>
+                    Dismiss
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Profitable Re-entry Confirmation Modal -->
+    <div id="reentryConfirmationModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="confirmation-container">
+                <div class="confirmation-header">
+                    <i class="fas fa-money-bill-wave"></i>
+                    <h2>Profitable Stop Loss Hit!</h2>
+                    <p id="confirmationMessage">Your position made a profit. Re-enter at current price?</p>
+                </div>
+                <div class="confirmation-details">
+                    <div class="detail-row">
+                        <span class="label">Strike:</span>
+                        <span id="confirmStrike" class="value">-</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Option Type:</span>
+                        <span id="confirmOptionType" class="value">-</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Buy Price:</span>
+                        <span id="confirmBuyPrice" class="value">₹-</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Sell Price:</span>
+                        <span id="confirmSellPrice" class="value">₹-</span>
+                    </div>
+                    <div class="detail-row profit-highlight">
+                        <span class="label">Profit Made:</span>
+                        <span id="confirmProfit" class="value">₹-</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Re-entry Price:</span>
+                        <span id="confirmReentryPrice" class="value">₹-</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Quantity:</span>
+                        <span id="confirmQuantity" class="value">- qty</span>
+                    </div>
+                </div>
+                <div class="confirmation-actions">
+                    <button id="acceptReentryBtn" class="btn btn-success">
+                        <i class="fas fa-check"></i>
+                        Yes, Re-enter
+                    </button>
+                    <button id="rejectReentryBtn" class="btn btn-danger">
+                        <i class="fas fa-times"></i>
+                        No, Skip
+                    </button>
+                </div>
+                <div id="confirmationError" class="error-message"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Dashboard -->
+    <div id="dashboard" class="dashboard-container" style="display: none;">
+        <!-- Header -->
+        <header class="dashboard-header">
+            <div class="header-left">
+                <div class="logo">
+                    <i class="fas fa-chart-line"></i>
+                    <h1>TradePro</h1>
+                </div>
+                <div class="header-subtitle">
+                    <span>Professional Trading Terminal</span>
+                    <div class="data-source">TrueData + Zerodha Integration</div>
+                </div>
+            </div>
+            <div class="header-controls">
+                <!-- Paper Trading Toggle -->
+                <div class="trading-mode-toggle">
+                    <div class="toggle-container">
+                        <span class="toggle-label" id="tradingModeLabel">Live Trading</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="paperTradingToggle">
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <span class="toggle-description">Paper Mode</span>
+                    </div>
+                </div>
+                
+                <!-- Cooldown Protection Toggle -->
+                <div class="trading-mode-toggle">
+                    <div class="toggle-container">
+                        <span class="toggle-label" id="cooldownModeLabel">Cooldown ON</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="cooldownToggle" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <span class="toggle-description">Protection Active</span>
+                    </div>
+                </div>
+                
+                <!-- Zerodha Connection Status -->
+                <div class="connection-status" id="zerodhaConnectionSection">
+                    <div class="status-item">
+                        <i class="fas fa-circle status-dot" id="zerodhaStatusDot"></i>
+                        <span id="zerodhaStatus" class="status-text">Zerodha: Disconnected</span>
+                    </div>
+                    <button id="zerodhaConnectBtn" class="btn btn-outline btn-small">
+                        <i class="fas fa-link"></i>
+                        Connect
+                    </button>
+                </div>
+                
+                <div class="time-display">
+                    <i class="fas fa-clock"></i>
+                    <span id="currentTime"></span>
+                </div>
+                
+                <button id="logoutBtn" class="btn btn-outline">
+                    <i class="fas fa-sign-out-alt"></i>
+                    Logout
+                </button>
+            </div>
+        </header>
+
+        <!-- P&L Summary and Market Status -->
+        <div class="summary-section">
+            <div class="pnl-summary">
+                <div class="section-header">
+                    <h3>
+                        <i class="fas fa-chart-pie"></i>
+                        Live P&L Summary
+                    </h3>
+                    <span class="data-source">Zerodha Live Data</span>
+                </div>
+                <div id="pnlCards" class="metrics-grid">
+                    <div id="profitCard" class="metric-card profit-card" style="display: none;">
+                        <div class="metric-icon">
+                            <i class="fas fa-arrow-trend-up"></i>
+                        </div>
+                        <div class="metric-content">
+                            <h5>Current Profit</h5>
+                            <h4 id="profitAmount">₹0.00</h4>
+                            <p id="profitPositions">0 positions in profit</p>
+                        </div>
+                    </div>
+                    <div id="lossCard" class="metric-card loss-card" style="display: none;">
+                        <div class="metric-icon">
+                            <i class="fas fa-arrow-trend-down"></i>
+                        </div>
+                        <div class="metric-content">
+                            <h5>Current Loss</h5>
+                            <h4 id="lossAmount">₹0.00</h4>
+                            <p id="lossPositions">0 positions in loss</p>
+                        </div>
+                    </div>
+                    <div id="netPnlCard" class="metric-card summary-card">
+                        <div class="metric-icon">
+                            <i class="fas fa-balance-scale"></i>
+                        </div>
+                        <div class="metric-content">
+                            <p id="netPnlText">Net Profit: ₹0.00</p>
+                        </div>
+                    </div>
+                    <div id="noPnlMessage" class="info-message">
+                        <i class="fas fa-info-circle"></i>
+                        No active positions to track P&L
+                    </div>
+                </div>
+            </div>
+
+            <div class="market-status">
+                <div class="section-header">
+                    <h3>
+                        <i class="fas fa-building-columns"></i>
+                        Market Status
+                    </h3>
+                </div>
+                <div id="marketStatusCard" class="market-card">
+                    <div class="market-indicator">
+                        <div class="status-dot" id="marketStatusDot"></div>
+                        <h4 id="marketStatus">MARKET CLOSED</h4>
+                    </div>
+                    <div class="market-details">
+                        <h5 id="marketReason">Weekend</h5>
+                        <p id="marketMessage">Market is closed on weekends</p>
+                        <div class="market-timing">
+                            <div class="timing-item">
+                                <i class="fas fa-door-open"></i>
+                                <span id="marketNextOpen">Next Open: Monday 9:15 AM IST</span>
+                            </div>
+                            <div class="timing-item">
+                                <i class="fas fa-clock"></i>
+                                <span id="marketCurrentTime">Current IST: 00:00:00 IST</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Wallet Information -->
+        <div class="wallet-section">
+            <div class="section-header">
+                <h3>
+                    <i class="fas fa-wallet"></i>
+                    <span id="portfolioTitle">Live Portfolio Summary</span>
+                </h3>
+                <div class="section-controls">
+                    <span class="data-source" id="portfolioDataSource">Zerodha Live Data</span>
+                    <button id="resetPaperWalletBtn" class="btn btn-outline btn-small" style="display: none;" onclick="resetPaperWallet()">
+                        <i class="fas fa-refresh"></i>
+                        Reset Wallet
+                    </button>
+                </div>
+            </div>
+            <div class="wallet-metrics">
+                <div class="metric-card primary">
+                    <div class="metric-icon">
+                        <i class="fas fa-coins"></i>
+                    </div>
+                    <div class="metric-content">
+                        <div class="metric-label">Balance</div>
+                        <div class="metric-value" id="walletBalance">₹0.00</div>
+                        <div class="metric-mode" id="balanceMode">LIVE TRADING</div>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon">
+                        <i class="fas fa-arrow-up"></i>
+                    </div>
+                    <div class="metric-content">
+                        <div class="metric-label">Invested</div>
+                        <div class="metric-value" id="walletInvested">₹0.00</div>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon">
+                        <i class="fas fa-chart-line"></i>
+                    </div>
+                    <div class="metric-content">
+                        <div class="metric-label">Current Value</div>
+                        <div class="metric-value" id="walletCurrentValue">₹0.00</div>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon">
+                        <i class="fas fa-percentage"></i>
+                    </div>
+                    <div class="metric-content">
+                        <div class="metric-label">Unrealized P&L</div>
+                        <div class="metric-value" id="walletUnrealizedPnl">₹0.00</div>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon">
+                        <i class="fas fa-briefcase"></i>
+                    </div>
+                    <div class="metric-content">
+                        <div class="metric-label">Positions</div>
+                        <div class="metric-value" id="walletPositions">0 Active</div>
+                    </div>
+                </div>
+            </div>
+            <div class="wallet-metrics-extended">
+                <div class="metric-card">
+                    <div class="metric-icon">
+                        <i class="fas fa-gem"></i>
+                    </div>
+                    <div class="metric-content">
+                        <div class="metric-label">Realized P&L</div>
+                        <div class="metric-value" id="walletRealizedPnl">₹0.00</div>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon">
+                        <i class="fas fa-chart-pie"></i>
+                    </div>
+                    <div class="metric-content">
+                        <div class="metric-label">Total Portfolio</div>
+                        <div class="metric-value" id="walletTotalPortfolio">₹0.00</div>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon">
+                        <i class="fas fa-balance-scale"></i>
+                    </div>
+                    <div class="metric-content">
+                        <div class="metric-label">Net P&L</div>
+                        <div class="metric-value" id="walletNetPnl">₹0.00</div>
+                    </div>
+                </div>
+                
+                <!-- Zerodha Live Data -->
+                <div class="zerodha-info" id="zerodhaInfo">
+                    <div class="metric-card zerodha-card">
+                        <div class="metric-icon">
+                            <i class="fas fa-university"></i>
+                        </div>
+                        <div class="metric-content">
+                            <div class="metric-label">Zerodha Funds</div>
+                            <div class="metric-value" id="zerodhaFunds">₹0.00</div>
+                            <button id="refreshFundsBtn" class="btn btn-small btn-primary">
+                                <i class="fas fa-sync"></i>
+                                Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <div class="metric-card zerodha-card">
+                        <div class="metric-icon">
+                            <i class="fas fa-list"></i>
+                        </div>
+                        <div class="metric-content">
+                            <div class="metric-label">Live Positions</div>
+                            <div class="metric-value" id="zerodhaPositions">0</div>
+                            <button id="viewPositionsBtn" class="btn btn-small btn-secondary">
+                                <i class="fas fa-eye"></i>
+                                View
+                            </button>
+                        </div>
+                    </div>
+                    <div class="metric-card zerodha-card">
+                        <div class="metric-icon">
+                            <i class="fas fa-file-alt"></i>
+                        </div>
+                        <div class="metric-content">
+                            <div class="metric-label">Orders</div>
+                            <div class="metric-value" id="zerodhaOrders">0</div>
+                            <button id="viewOrdersBtn" class="btn btn-small btn-secondary">
+                                <i class="fas fa-eye"></i>
+                                View
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Trading Interface -->
+        <div class="trading-section">
+            <!-- Symbol and Settings -->
+            <div class="trading-controls">
+                <div class="controls-header">
+                    <h3>
+                        <i class="fas fa-cogs"></i>
+                        Trading Controls
+                    </h3>
+                </div>
+                <div class="controls-grid">
+                    <div class="control-group">
+                        <label for="symbolSelect">
+                            <i class="fas fa-search"></i>
+                            Symbol
+                        </label>
+                        <select id="symbolSelect" class="form-select">
+                            <option value="NIFTY">NIFTY (Lot: 75)</option>
+                            <option value="BANKNIFTY">BANKNIFTY (Lot: 25)</option>
+                            <option value="MIDCPNIFTY">MIDCPNIFTY (Lot: 140)</option>
+                            <option value="SENSEX">SENSEX (Lot: 10)</option>
+                            <option value="SBIN">SBIN (Lot: 3400)</option>
+                            <option value="RELIANCE">RELIANCE (Lot: 500)</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label for="expirySelect">
+                            <i class="fas fa-calendar-alt"></i>
+                            Expiry
+                        </label>
+                        <select id="expirySelect" class="form-select">
+                            <option value="">Loading...</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label for="algorithmSelect">
+                            <i class="fas fa-brain"></i>
+                            Trading Algorithm
+                        </label>
+                        <select id="algorithmSelect" class="form-select">
+                            <option value="simple">Algorithm 1: Simple Stop Loss</option>
+                            <option value="advanced">Algorithm 2: Advanced Trailing Stop Loss</option>
+                        </select>
+                        <div class="algorithm-description" style="font-size: 11px; color: #666; margin-top: 4px;">
+                            <div id="simpleDesc" style="display: block;">
+                                <strong>Simple:</strong> Manual buy → Stop loss (buy-10) → Auto buy at last stop loss
+                            </div>
+                            <div id="advancedDesc" style="display: none;">
+                                <strong>Advanced:</strong> Dynamic trailing stop loss with profit protection and minimum threshold
+                            </div>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label for="refreshInterval">
+                            <i class="fas fa-sync-alt"></i>
+                            Refresh Interval
+                        </label>
+                        <div class="range-input">
+                            <input type="range" id="refreshInterval" min="0.5" max="10" step="0.5" value="0.5">
+                            <span id="refreshValue" class="range-value">0.5s</span>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <button id="startOptionChain" class="btn btn-primary btn-large">
+                            <i class="fas fa-play"></i>
+                            Start Option Chain
+                        </button>
+                    </div>
+                    <div class="control-group">
+                        <button id="clearQuantitiesBtn" class="btn btn-secondary btn-small">
+                            <i class="fas fa-eraser"></i>
+                            Reset Quantities
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+
+            <!-- Option Chain Info -->
+            <div class="option-info-section">
+                <div class="section-header">
+                    <h3>
+                        <i class="fas fa-table"></i>
+                        Live Option Chain
+                    </h3>
+                </div>
+                <div class="option-metrics">
+                    <div class="metric-card">
+                        <div class="metric-icon">
+                            <i class="fas fa-crosshairs"></i>
+                        </div>
+                        <div class="metric-content">
+                            <div class="metric-label">Underlying</div>
+                            <div class="metric-value" id="underlyingPrice">N/A</div>
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-icon">
+                            <i class="fas fa-list"></i>
+                        </div>
+                        <div class="metric-content">
+                            <div class="metric-label">Total Options</div>
+                            <div class="metric-value" id="totalOptions">0</div>
+                        </div>
+                    </div>
+                    <div class="metric-card calls">
+                        <div class="metric-icon">
+                            <i class="fas fa-arrow-up"></i>
+                        </div>
+                        <div class="metric-content">
+                            <div class="metric-label">Calls (CE)</div>
+                            <div class="metric-value" id="callsCount">0</div>
+                        </div>
+                    </div>
+                    <div class="metric-card puts">
+                        <div class="metric-icon">
+                            <i class="fas fa-arrow-down"></i>
+                        </div>
+                        <div class="metric-content">
+                            <div class="metric-label">Puts (PE)</div>
+                            <div class="metric-value" id="putsCount">0</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Trading Interface -->
+            <div class="trading-interface">
+                <div class="options-container">
+                    <!-- Calls -->
+                    <div class="options-column calls-column">
+                        <div class="strike-selector">
+                            <label for="callStrikeSelect">
+                                <i class="fas fa-list"></i>
+                                Quick Select CE:
+                            </label>
+                            <select id="callStrikeSelect" class="strike-dropdown">
+                                <option value="">Select Strike...</option>
+                            </select>
+                        </div>
+                        <div class="column-header">
+                            <i class="fas fa-arrow-up"></i>
+                            <h4>Calls (CE)</h4>
+                        </div>
+                        <div id="callsOptions" class="options-list">
+                            <div class="info-message">
+                                <i class="fas fa-info-circle"></i>
+                                Start option chain to see calls
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ATM -->
+                    <div class="atm-column">
+                        <div class="column-header atm-header">
+                            <i class="fas fa-crosshairs"></i>
+                            <h4>ATM</h4>
+                        </div>
+                        <div id="atmOptions" class="atm-list">
+                            <div class="info-message">
+                                <i class="fas fa-minus"></i>
+                                N/A
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Puts -->
+                    <div class="options-column puts-column">
+                        <div class="strike-selector">
+                            <label for="putStrikeSelect">
+                                <i class="fas fa-list"></i>
+                                Quick Select PE:
+                            </label>
+                            <select id="putStrikeSelect" class="strike-dropdown">
+                                <option value="">Select Strike...</option>
+                            </select>
+                        </div>
+                        <div class="column-header">
+                            <i class="fas fa-arrow-down"></i>
+                            <h4>Puts (PE)</h4>
+                        </div>
+                        <div id="putsOptions" class="options-list">
+                            <div class="info-message">
+                                <i class="fas fa-info-circle"></i>
+                                Start option chain to see puts
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+
+            <!-- Open Positions -->
+            <div class="positions-section">
+                <div class="section-header">
+                    <h3>
+                        <i class="fas fa-briefcase"></i>
+                        Open Positions
+                    </h3>
+                </div>
+                <div class="positions-controls">
+                    <div class="position-toggles">
+                        <button id="zerodhaPositionsBtn" class="btn btn-secondary position-toggle active">
+                            <i class="fas fa-university"></i>
+                            Zerodha Positions
+                        </button>
+                        <button id="autoTradingPositionsBtn" class="btn btn-secondary position-toggle">
+                            <i class="fas fa-robot"></i>
+                            Auto Trading Positions
+                        </button>
+                    </div>
+                    <button id="sellAllBtn" class="btn btn-danger">
+                        <i class="fas fa-stop"></i>
+                        Sell All
+                    </button>
+                    <button id="resetStopLossBtn" class="btn btn-warning">
+                        <i class="fas fa-redo"></i>
+                        Reset Stop Loss
+                    </button>
+                    <!-- Auto Trading is ALWAYS ENABLED -->
+                    <div class="auto-trading-status">
+                        <i class="fas fa-robot" style="color: #28a745;"></i>
+                        <span style="color: #28a745; font-weight: bold;">Auto Trading: ACTIVE</span>
+                    </div>
+                    <select id="positionFilter" class="form-select">
+                        <option value="All">Show All</option>
+                        <option value="Running">Running Only</option>
+                        <option value="Waiting">Waiting Only</option>
+                    </select>
+                </div>
+                <div id="positionsTable" class="positions-table">
+                    <div class="position-row position-header">
+                        <div>Symbol</div>
+                        <div>Qty</div>
+                        <div>Avg Buy ₹</div>
+                        <div>Current ₹</div>
+                        <div>P&L ₹</div>
+                        <div>Stop Loss</div>
+                        <div>Realized P&L</div>
+                        <div>Exchange</div>
+                        <div>Product</div>
+                        <div>Sell</div>
+                    </div>
+                    <div class="info-message">
+                        <i class="fas fa-info-circle"></i>
+                        No open positions
+                    </div>
+                </div>
+                
+                <!-- Position Cooldown Controls Section -->
+                <div class="cooldown-controls-section">
+                    <div class="section-header">
+                        <h4>
+                            <i class="fas fa-snowflake"></i> 
+                            Position Cooldown Controls
+                        </h4>
+                        <div class="section-description">
+                            <small>Control individual position cooldown settings. When OFF, position will continue auto-trading without cooldown limits.</small>
+                        </div>
+                    </div>
+                    <div id="cooldownControlsTable" class="cooldown-controls-table">
+                        <div class="cooldown-control-row cooldown-control-header">
+                            <div>Symbol</div>
+                            <div>Strike & Type</div>
+                            <div>Auto Buy Count</div>
+                            <div>Status</div>
+                            <div>Cooldown Toggle</div>
+                        </div>
+                        <div class="info-message">
+                            <i class="fas fa-info-circle"></i>
+                            No positions available for cooldown control
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Truedata Live Price Section -->
+                <div class="truedata-section">
+                    <div class="section-header">
+                        <h4><i class="fas fa-bolt"></i> Truedata Live Price</h4>
+                    </div>
+                    <div id="truedataCards" class="truedata-cards">
+                        <!-- Cards will be injected by JS -->
+                        <!-- New column for app.py stop loss value will be shown in each card -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sidebar Toggle Button -->
+            <button id="sidebarToggle" class="sidebar-toggle" aria-label="Toggle Trade History Sidebar">
+                <i class="fas fa-angle-left"></i>
+            </button>
+
+            <!-- Sidebar - Trade History -->
+            <div class="sidebar collapsed">
+                <div class="trade-history">
+                    <div class="sidebar-header">
+                        <h3>
+                            <i class="fas fa-history"></i>
+                            Trade History
+                        </h3>
+                        <button id="sidebarClose" class="sidebar-close" aria-label="Close Sidebar">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="history-controls">
+                        <button id="clearHistoryBtn" class="btn btn-danger btn-small">
+                            <i class="fas fa-trash"></i>
+                            Clear
+                        </button>
+                        <button id="viewAllHistoryBtn" class="btn btn-info btn-small">
+                            <i class="fas fa-list"></i>
+                            All History
+                        </button>
+                        <select id="historyFilter" class="form-select">
+                            <option value="All">All</option>
+                            <option value="Buys Only">Buys Only</option>
+                            <option value="Sells Only">Sells Only</option>
+                            <option value="Profit Only">Profit Only</option>
+                            <option value="Loss Only">Loss Only</option>
+                        </select>
+                    </div>
+                    <div class="history-summary">
+                        <div class="summary-metric">
+                            <span class="label">
+                                <i class="fas fa-chart-line"></i>
+                                Total Trades:
+                            </span>
+                            <span id="totalTrades">0</span>
+                        </div>
+                        <div class="summary-metric">
+                            <span class="label">
+                                <i class="fas fa-arrow-up text-success"></i>
+                                Buy Orders:
+                            </span>
+                            <span id="buyTrades">0</span>
+                        </div>
+                        <div class="summary-metric">
+                            <span class="label">
+                                <i class="fas fa-arrow-down text-danger"></i>
+                                Sell Orders:
+                            </span>
+                            <span id="sellTrades">0</span>
+                        </div>
+                        <div class="summary-metric">
+                            <span class="label">
+                                <i class="fas fa-balance-scale"></i>
+                                Total P&L:
+                            </span>
+                            <span id="historyTotalPnl">₹0.00</span>
+                        </div>
+                    </div>
+                    <div id="tradeHistoryList" class="history-list">
+                        <div class="info-message">
+                            <i class="fas fa-info-circle"></i>
+                            No trades yet
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Content -->
+            <div class="main-content">
+                <!-- Zerodha Login Notifications -->
+                {% if zerodha_success %}
+                <div class="notification success-notification" style="margin: 20px; padding: 15px; background: #d4edda; border: 1px solid #c3e6cb; border-radius: 8px; color: #155724;">
+                    <i class="fas fa-check-circle" style="margin-right: 10px;"></i>
+                    <span>{{ zerodha_success|safe }}</span>
+                    <button onclick="this.parentElement.style.display='none'" style="float: right; background: none; border: none; font-size: 18px; cursor: pointer;">&times;</button>
+                </div>
+                {% endif %}
+                
+                {% if zerodha_error %}
+                <div class="notification error-notification" style="margin: 20px; padding: 15px; background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 8px; color: #721c24;">
+                    <i class="fas fa-exclamation-triangle" style="margin-right: 10px;"></i>
+                    <span>{{ zerodha_error|safe }}</span>
+                    <button onclick="this.parentElement.style.display='none'" style="float: right; background: none; border: none; font-size: 18px; cursor: pointer;">&times;</button>
+                </div>
+                {% endif %}
+                
+                <!-- Loading Overlay -->
+                <div id="loadingOverlay" class="loading-overlay" style="display: none;">
+                    <div class="loading-spinner">
+                        <i class="fas fa-spinner fa-spin"></i>
+                        <p>Loading...</p>
+                    </div>
+                </div>
+
+                <!-- Toast Notifications -->
+                <div id="toastContainer" class="toast-container"></div>
+            </div>
+
+            <!-- Scripts -->
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.js"></script>
+            <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+        </div>
+    </div>
+</body>
+</html>

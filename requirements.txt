@@ -1,0 +1,13 @@
+Flask==3.0.3
+Flask-SocketIO==5.3.6
+kiteconnect==4.2.0
+truedata==1.6.4
+pandas==2.2.2
+numpy==1.26.4
+pytz==2024.1
+requests==2.32.3
+python-dotenv==1.0.1 
+gunicorn==21.2.0      
+python-socketio==5.11.3
+eventlet==0.35.2
+python-dateutil==2.9.0

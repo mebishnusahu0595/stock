@@ -1,0 +1,268 @@
+/* Additional Auto Trading Enhancements */
+
+/* Pulsing effect for active stop losses */
+.stop-loss-cell.pulsing {
+    animation: pulse-stop-loss 2s infinite;
+}
+
+@keyframes pulse-stop-loss {
+    0%, 100% { 
+        background: linear-gradient(135deg, #fff5f5, #ffeaea);
+        transform: scale(1);
+    }
+    50% { 
+        background: linear-gradient(135deg, #ffebee, #fce4ec);
+        transform: scale(1.02);
+    }
+}
+
+/* Enhanced toast notifications */
+.toast {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: white;
+    border-radius: 8px;
+    padding: 16px 20px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    transform: translateX(100%);
+    transition: transform 0.3s ease-out;
+    max-width: 400px;
+    border-left: 4px solid #2196f3;
+}
+
+.toast.show {
+    transform: translateX(0);
+}
+
+.toast.success {
+    border-left-color: #4caf50;
+}
+
+.toast.warning {
+    border-left-color: #ff9800;
+}
+
+.toast.error {
+    border-left-color: #f44336;
+}
+
+.toast-content {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-weight: 500;
+}
+
+.toast-content i {
+    font-size: 1.2rem;
+}
+
+.toast.success .toast-content i {
+    color: #4caf50;
+}
+
+.toast.warning .toast-content i {
+    color: #ff9800;
+}
+
+.toast.error .toast-content i {
+    color: #f44336;
+}
+
+/* Auto trading position enhancements */
+.position-row {
+    transition: all 0.3s ease;
+    border-radius: 6px;
+    margin-bottom: 2px;
+}
+
+.position-row:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Real-time price updates */
+.price-update {
+    animation: price-flash 0.5s ease-out;
+}
+
+@keyframes price-flash {
+    0% { background-color: #fff3cd; }
+    100% { background-color: transparent; }
+}
+
+/* Mobile responsiveness for notifications */
+@media (max-width: 768px) {
+    .toast {
+        right: 10px;
+        left: 10px;
+        max-width: none;
+        transform: translateY(-100%);
+    }
+    
+    .toast.show {
+        transform: translateY(0);
+    }
+    
+    .paper-trading-banner {
+        font-size: 0.8rem;
+        padding: 8px 15px;
+    }
+}
+
+/* Auto Trading Status Indicators */
+.auto-trading-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: linear-gradient(135deg, #e8f5e8, #f0f9f0);
+    border-radius: 20px;
+    border: 1px solid #4caf50;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: #2e7d32;
+}
+
+.auto-trading-status.active {
+    animation: pulse-green 2s infinite;
+}
+
+.auto-trading-status i {
+    color: #4caf50;
+}
+
+/* Position Mode Badges Enhanced */
+.mode-badge.auto-monitoring {
+    background: linear-gradient(135deg, #4caf50, #45a049);
+    color: white;
+    box-shadow: 0 2px 4px rgba(76, 175, 80, 0.3);
+}
+
+.mode-badge.waiting-auto-buy {
+    background: linear-gradient(135deg, #ff9800, #f57c00);
+    color: white;
+    box-shadow: 0 2px 4px rgba(255, 152, 0, 0.3);
+    animation: pulse-orange 1.5s infinite;
+}
+
+/* Stop Loss Visualization */
+.stop-loss-visualization {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.stop-loss-bar {
+    width: 40px;
+    height: 4px;
+    background: #ffebee;
+    border-radius: 2px;
+    position: relative;
+    overflow: hidden;
+}
+
+.stop-loss-progress {
+    height: 100%;
+    background: linear-gradient(90deg, #4caf50, #ff9800, #f44336);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+
+/* Trailing Stop Loss Indicator */
+.trailing-steps {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: 4px;
+}
+
+.trailing-step {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #2196f3;
+    opacity: 0.3;
+}
+
+.trailing-step.active {
+    opacity: 1;
+    animation: pulse-blue 1s infinite;
+}
+
+@keyframes pulse-blue {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.2); }
+}
+
+/* Auto Trading Controls */
+.auto-trading-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 12px;
+    background: #f8f9fa;
+    border-radius: 8px;
+    margin: 10px 0;
+}
+
+.auto-trading-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500;
+    color: #495057;
+}
+
+.auto-trading-toggle input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    accent-color: #4caf50;
+}
+
+/* Enhanced Position Actions */
+.position-actions {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+
+.action-btn {
+    padding: 4px 8px;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.action-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.action-btn.auto-sell {
+    background: #ff5722;
+    color: white;
+}
+
+.action-btn.manual-sell {
+    background: #ff9800;
+    color: white;
+}
+
+.action-btn.disabled {
+    background: #e0e0e0;
+    color: #9e9e9e;
+    cursor: not-allowed;
+}
+
+.action-btn.disabled:hover {
+    transform: none;
+    box-shadow: none;
+}
