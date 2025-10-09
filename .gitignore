@@ -1,0 +1,227 @@
+# Stock Dashboard .gitignore
+
+# ===============================
+# Test Files
+# ===============================
+test_*.py
+*_test.py
+debug_*.py
+*debug*.py
+simulate_*.py
+run_test*.py
+run_tests.*
+quick_test.py
+simple_test*.py
+final_*test*.py
+test_*.md
+
+# ===============================
+# Documentation & Analysis Files  
+# ===============================
+*.md
+!README.md
+!CHANGELOG.md
+ADVANCED_ALGORITHM_DOCUMENTATION.md
+PAPER_TRADING_AUTO_FIX_SUMMARY.md
+PROGRESSIVE_MIN_FIX_SUMMARY.py
+RAPID_FIRE_FIX_SUMMARY.md
+CE55200_FIX_SUMMARY.md
+AUTO_BUY_FIX_SUMMARY.py
+FIXED_STEP_ALGO_SUMMARY.py
+QUICK_START_GUIDE.md
+*_SUMMARY.*
+*_DOCUMENTATION.*
+*_FIX_SUMMARY.*
+
+# ===============================
+# Debug & Analysis Files
+# ===============================
+analyze_*.py
+debug_*.py
+correct_*.py
+fix_*.py
+*_fix.py
+*_debug.py
+*_analysis.py
+live_debug.py
+step_logic_explanation.py
+exact_changes_table.py
+simple_10_point_table.py
+
+# ===============================
+# Temporary & Backup Files
+# ===============================
+app_backup.py
+app_*.py
+!app.py
+*_backup.*
+*.bak
+*.tmp
+*.temp
+note.txt
+notes.txt
+*.log
+
+# ===============================
+# Authentication & Sensitive Data
+# ===============================
+access_token.py
+access_token.txt
+active_session.txt
+new_token.py
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+.env
+.env.*
+config.ini
+secrets.*
+
+# ===============================
+# Python
+# ===============================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ===============================
+# Virtual Environments
+# ===============================
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+virtualenv/
+
+# ===============================
+# IDE & Editor Files
+# ===============================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ===============================
+# Data & CSV Files (Optional)
+# ===============================
+*.csv
+!zerodha_instruments.csv
+data/
+datasets/
+*.json
+!package.json
+!requirements.json
+
+# ===============================
+# Logs & Output Files
+# ===============================
+*.log
+logs/
+log/
+output/
+results/
+reports/
+
+# ===============================
+# System Files
+# ===============================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ===============================
+# Git & Version Control
+# ===============================
+.git/
+.gitattributes
+
+# ===============================
+# Node.js (if any frontend)
+# ===============================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ===============================
+# Database Files
+# ===============================
+*.db
+*.sqlite
+*.sqlite3
+
+# ===============================
+# Compiled Files
+# ===============================
+*.com
+*.class
+*.dll
+*.exe
+*.o
+*.so
+
+# ===============================
+# Archives
+# ===============================
+*.7z
+*.dmg
+*.gz
+*.iso
+*.jar
+*.rar
+*.tar
+*.zip
+
+# ===============================
+# Image Files (if not needed)
+# ===============================
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.ico
+*.svg
+
+# ===============================
+# Cache Directories
+# ===============================
+.cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
