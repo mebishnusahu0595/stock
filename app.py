@@ -3341,7 +3341,7 @@ def api_expiry_list(symbol):
     expiry_url = f"https://history.truedata.in/getSymbolExpiryList?symbol={symbol}&response=csv"
     headers = {
         "accept": "application/json",
-        "authorization": "Bearer X1ht9LhAmXO3Sag6DDRrZk5za7veMrA6cel5wKkxWclgvklkpsQHjdYNaX6P_JRTF0vg4HF0k5PDYrZL9BEoOzjuwUDHEG-RznSiziRIeyuPq2M9ceHoOPFh79MrirerZTiaoHY4y-YTFADgA5zVsTjFCKZ44KcNsCmN0KyvurtTSvTLwq825fmWpZHPgyPZ-5z2aT7ZDwqKdyR4wNSABxJVq0NVRY1HaxAWgAGNWgLhjN5G34D-RThOGiZVYNslRwMB6VA_-MonlKG5X-rl1g"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
+        "authorization": "Bearer 1UWnwzYEyRWPUQspRNBQevVuCF3ez0MP-XUCWbFucOoU3cQn8VmWysdkVpiTJXWIWhoGcBeETvJRIR5OiwytBbTKSOGtdIoLJX1C3zwqKmwryAApOPwGfOWJiJ-kKkCdkf1R1iS6U7iH8R94FluODYCZMuAx-by14q0lUj5vys2Khn2f4hBbobFOoZ4WMC24jRpLyIGesbI50RnAAyMGkyBqzRTuNplOlywcGFPsK5QsSwkCWqMGNr6m01efwCo1q5PBVTFTEHlshjnAR7g5hg"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
     }
     
     try:
@@ -3762,26 +3762,59 @@ def paper_buy_option(strike, option_type, price, quantity, lot_size):
     return True, position
 
 def paper_sell_option(strike, option_type, price, quantity, lot_size):
-    """Execute paper sell order"""
+    """Execute paper sell order - Enhanced to sell ALL lots of same strike if needed"""
     total_qty = quantity * lot_size
     
-    # Find matching position
-    position_found = None
-    for pos in app_state['paper_positions']:
-        if (pos['strike'] == strike and 
-            pos['option_type'] == option_type and 
-            pos['quantity'] >= total_qty):
-            position_found = pos
-            break
+    # 🚨 FIX: Find ALL matching positions for this strike and sell them together
+    matching_positions = []
+    total_available_qty = 0
     
-    if not position_found:
+    for pos in app_state['paper_positions']:
+        if (pos['strike'] == strike and pos['option_type'] == option_type):
+            matching_positions.append(pos)
+            total_available_qty += pos['quantity']
+    
+    if not matching_positions:
         return False, f"No matching position found for {option_type} {strike}"
+    
+    # If user wants to sell more than available, sell everything available
+    if total_qty > total_available_qty:
+        print(f"⚠️ Requested {total_qty} but only {total_available_qty} available. Selling ALL available.")
+        total_qty = total_available_qty
+    
+    # Calculate total cost and P&L for all matching positions
+    total_cost = 0
+    remaining_to_sell = total_qty
+    positions_to_remove = []
+    positions_to_update = []
+    
+    for pos in matching_positions:
+        if remaining_to_sell <= 0:
+            break
+            
+        pos_qty = pos['quantity']
+        pos_cost = pos.get('total_cost', pos_qty * pos['buy_price'])
+        cost_per_qty = pos_cost / pos_qty
+        
+        if remaining_to_sell >= pos_qty:
+            # Sell entire position
+            qty_to_sell_from_this_pos = pos_qty
+            cost_from_this_pos = pos_cost
+            positions_to_remove.append(pos)
+        else:
+            # Sell partial position
+            qty_to_sell_from_this_pos = remaining_to_sell
+            cost_from_this_pos = qty_to_sell_from_this_pos * cost_per_qty
+            pos['quantity'] -= qty_to_sell_from_this_pos
+            pos['total_cost'] = pos.get('total_cost', pos_qty * pos['buy_price']) - cost_from_this_pos
+            positions_to_update.append(pos)
+        
+        total_cost += cost_from_this_pos
+        remaining_to_sell -= qty_to_sell_from_this_pos
     
     # Calculate P&L
     sell_value = total_qty * price
-    cost_per_qty = position_found['total_cost'] / position_found['quantity']
-    cost_for_sold_qty = total_qty * cost_per_qty
-    pnl = sell_value - cost_for_sold_qty
+    pnl = sell_value - total_cost
     
     # Add to wallet
     app_state['paper_wallet_balance'] += sell_value
@@ -3794,14 +3827,12 @@ def paper_sell_option(strike, option_type, price, quantity, lot_size):
             auto_pos['sold'] = True
             print(f"🔴 Marked auto-position as manually sold: {strike} {option_type}")
     
-    # Update or remove position
-    if position_found['quantity'] == total_qty:
-        # Remove position completely
-        app_state['paper_positions'].remove(position_found)
-    else:
-        # Reduce position quantity
-        position_found['quantity'] -= total_qty
-        position_found['total_cost'] -= cost_for_sold_qty
+    # Apply position changes
+    for pos in positions_to_remove:
+        app_state['paper_positions'].remove(pos)
+    
+    # Calculate actual lots sold
+    actual_lots_sold = total_qty // lot_size
     
     # Add to order history
     order = {
@@ -3811,38 +3842,39 @@ def paper_sell_option(strike, option_type, price, quantity, lot_size):
         'option_type': option_type,
         'price': price,
         'quantity': total_qty,
-        'lots': quantity,
+        'lots': actual_lots_sold,
         'total_value': sell_value,
         'pnl': pnl,
         'timestamp': get_ist_timestamp(),
         'status': 'COMPLETE',
-        'reason': 'Manual Sell'
+        'reason': 'Manual Sell (ALL LOTS)'
     }
     
     app_state['paper_orders'].append(order)
     
     # Add to trade history
+    avg_cost_per_qty = total_cost / total_qty if total_qty > 0 else 0
     trade = {
-        'buy_price': cost_per_qty,
+        'buy_price': avg_cost_per_qty,
         'sell_price': price,
         'price': price,  # Add this for frontend compatibility
         'quantity': total_qty,
         'qty': total_qty,  # Add this for frontend compatibility
-        'lots': quantity,
+        'lots': actual_lots_sold,
         'pnl': pnl,
-        'pnl_percentage': (pnl / cost_for_sold_qty) * 100 if cost_for_sold_qty > 0 else 0,
+        'pnl_percentage': (pnl / total_cost) * 100 if total_cost > 0 else 0,
         'strike': strike,
         'option_type': option_type,
         'type': option_type,  # Add this for frontend compatibility
         'action': 'Sell',  # Add action field
         'timestamp': order['timestamp'],
         'time': get_ist_time_formatted(),  # IST formatted time
-        'reason': 'Manual Sell'
+        'reason': 'Manual Sell (ALL LOTS)'
     }
     
     app_state['paper_trade_history'].append(trade)
     
-    print(f"📄 Paper MANUAL SELL: {quantity} lot(s) of {option_type} {strike} @ ₹{price:.2f} = ₹{sell_value:.2f} (P&L: ₹{pnl:.2f})")
+    print(f"📄 Paper MANUAL SELL: {actual_lots_sold} lot(s) ({total_qty} units) of {option_type} {strike} @ ₹{price:.2f} = ₹{sell_value:.2f} (P&L: ₹{pnl:.2f})")
     
     # Clean up auto-positions that are manually sold
     app_state['auto_positions'] = [pos for pos in app_state['auto_positions'] 
@@ -4015,7 +4047,7 @@ def api_sell_option():
     price = float(data.get('price'))
     symbol = data.get('symbol', 'NIFTY')
     expiry = data.get('expiry', '')
-    lots = int(data.get('lots', 1))  # Add lots parameter for paper trading
+    lots = int(data.get('lots', 0))  # 0 means sell ALL lots of this strike
     
     # Debug: Print current paper trading status
     print(f"🐛 DEBUG SELL: paper_trading_enabled = {app_state['paper_trading_enabled']}")
@@ -4025,6 +4057,26 @@ def api_sell_option():
     # Check if paper trading is enabled
     if app_state['paper_trading_enabled']:
         print(f"📄 PAPER TRADING MODE: Processing sell order")
+        
+        # 🚨 FIX: If lots=0 or not specified, find total lots for this strike and sell ALL
+        if lots == 0:
+            total_lots_for_strike = 0
+            lot_size = LOT_SIZES.get(symbol, 75)
+            
+            for pos in app_state['paper_positions']:
+                if (pos['strike'] == strike and pos['option_type'] == option_type):
+                    total_lots_for_strike += pos['quantity'] // lot_size
+            
+            if total_lots_for_strike > 0:
+                lots = total_lots_for_strike
+                print(f"🎯 AUTO-DETECTED: Found {total_lots_for_strike} lot(s) of {option_type} {strike} - Selling ALL")
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': f'No position found for {option_type} {strike}',
+                    'mode': 'paper'
+                })
+        
         # Paper Trading Mode
         lot_size = LOT_SIZES.get(symbol, 75)
         success, result = paper_sell_option(strike, option_type, price, lots, lot_size)
@@ -4776,7 +4828,7 @@ def api_sell_all_positions():
 
 @app.route('/api/sell-individual-position', methods=['POST'])
 def api_sell_individual_position():
-    """Sell individual position through Paper Trading or Zerodha (based on mode)"""
+    """Sell individual position through Paper Trading or Zerodha (based on mode) - SELLS ALL LOTS OF SAME STRIKE"""
     
     data = request.get_json()
     tradingsymbol = data.get('tradingsymbol')
@@ -4792,55 +4844,66 @@ def api_sell_individual_position():
     
     # Check if paper trading is enabled
     if app_state['paper_trading_enabled']:
-        print(f"📄 PAPER MODE: Selling individual position {tradingsymbol}")
+        print(f"📄 PAPER MODE: Selling ALL lots of individual position {tradingsymbol}")
         
-        # Find position in paper positions
-        position_found = None
+        # 🚨 FIX: Find ALL positions with same strike and sell them together
+        positions_found = []
+        total_quantity = 0
+        total_cost = 0
+        
         for pos in app_state['paper_positions']:
             if pos['tradingsymbol'] == tradingsymbol:
-                position_found = pos
-                break
+                positions_found.append(pos)
+                total_quantity += pos['quantity']
+                total_cost += pos.get('total_cost', pos['quantity'] * pos['buy_price'])
         
-        if not position_found:
+        if not positions_found:
             return jsonify({
                 'success': False,
                 'message': f'No paper position found for {tradingsymbol}'
             })
         
-        quantity = position_found['quantity']
-        current_price = float(data.get('current_price', position_found.get('ltp', position_found['buy_price'])))
+        # Use the first position for reference data
+        first_position = positions_found[0]
+        current_price = float(data.get('current_price', first_position.get('ltp', first_position['buy_price'])))
         
-        # Calculate P&L for paper position
-        total_buy_value = quantity * position_found['buy_price']
-        total_sell_value = quantity * current_price
-        pnl = total_sell_value - total_buy_value
+        # Calculate P&L for ALL positions combined
+        total_sell_value = total_quantity * current_price
+        pnl = total_sell_value - total_cost
         
         # Update paper wallet balance
         app_state['paper_wallet_balance'] += total_sell_value
         
-        # Remove position from paper positions
-        app_state['paper_positions'].remove(position_found)
+        # Remove ALL positions with same trading symbol
+        app_state['paper_positions'] = [pos for pos in app_state['paper_positions'] 
+                                       if pos['tradingsymbol'] != tradingsymbol]
+        
+        # Calculate average buy price for trade history
+        avg_buy_price = total_cost / total_quantity if total_quantity > 0 else 0
         
         # Add to trade history
         app_state['trade_history'].append({
-            'action': 'Paper Sell Individual',
+            'action': 'Paper Sell Individual (ALL LOTS)',
             'tradingsymbol': tradingsymbol,
-            'qty': quantity,
-            'buy_price': position_found['buy_price'],
+            'qty': total_quantity,
+            'buy_price': avg_buy_price,
             'sell_price': current_price,
             'pnl': pnl,
             'wallet_balance': app_state['paper_wallet_balance'],
-            'time': dt.now().strftime('%Y-%m-%d %H:%M:%S')
+            'time': dt.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'lots_count': len(positions_found)
         })
         
         pnl_text = f"Profit: ₹{pnl:.2f}" if pnl >= 0 else f"Loss: ₹{abs(pnl):.2f}"
         
         return jsonify({
             'success': True,
-            'message': f'📄 Paper position sold: {quantity} {tradingsymbol} ({pnl_text})',
+            'message': f'📄 ALL positions sold: {total_quantity} units ({len(positions_found)} lots) of {tradingsymbol} ({pnl_text})',
             'pnl': pnl,
             'wallet_balance': app_state['paper_wallet_balance'],
-            'mode': 'paper'
+            'mode': 'paper',
+            'lots_sold': len(positions_found),
+            'total_quantity': total_quantity
         })
     
     print(f"🏦 LIVE MODE: Selling individual position via Zerodha")
@@ -5930,7 +5993,7 @@ def api_auto_start_option_chain():
         expiry_url = f"https://history.truedata.in/getSymbolExpiryList?symbol={symbol}&response=csv"
         headers = {
             "accept": "application/json",
-            "authorization": "Bearer X1ht9LhAmXO3Sag6DDRrZk5za7veMrA6cel5wKkxWclgvklkpsQHjdYNaX6P_JRTF0vg4HF0k5PDYrZL9BEoOzjuwUDHEG-RznSiziRIeyuPq2M9ceHoOPFh79MrirerZTiaoHY4y-YTFADgA5zVsTjFCKZ44KcNsCmN0KyvurtTSvTLwq825fmWpZHPgyPZ-5z2aT7ZDwqKdyR4wNSABxJVq0NVRY1HaxAWgAGNWgLhjN5G34D-RThOGiZVYNslRwMB6VA_-MonlKG5X-rl1g"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
+            "authorization": "Bearer 1UWnwzYEyRWPUQspRNBQevVuCF3ez0MP-XUCWbFucOoU3cQn8VmWysdkVpiTJXWIWhoGcBeETvJRIR5OiwytBbTKSOGtdIoLJX1C3zwqKmwryAApOPwGfOWJiJ-kKkCdkf1R1iS6U7iH8R94FluODYCZMuAx-by14q0lUj5vys2Khn2f4hBbobFOoZ4WMC24jRpLyIGesbI50RnAAyMGkyBqzRTuNplOlywcGFPsK5QsSwkCWqMGNr6m01efwCo1q5PBVTFTEHlshjnAR7g5hg"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
         }
         
         response = requests.get(expiry_url, headers=headers)
