@@ -3341,7 +3341,7 @@ def api_expiry_list(symbol):
     expiry_url = f"https://history.truedata.in/getSymbolExpiryList?symbol={symbol}&response=csv"
     headers = {
         "accept": "application/json",
-        "authorization": "Bearer 1UWnwzYEyRWPUQspRNBQevVuCF3ez0MP-XUCWbFucOoU3cQn8VmWysdkVpiTJXWIWhoGcBeETvJRIR5OiwytBbTKSOGtdIoLJX1C3zwqKmwryAApOPwGfOWJiJ-kKkCdkf1R1iS6U7iH8R94FluODYCZMuAx-by14q0lUj5vys2Khn2f4hBbobFOoZ4WMC24jRpLyIGesbI50RnAAyMGkyBqzRTuNplOlywcGFPsK5QsSwkCWqMGNr6m01efwCo1q5PBVTFTEHlshjnAR7g5hg"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
+        "authorization": "Bearer 4y5QKOFZHnnsWR72fRYjmzrPtmGxmN-7QJiQy6zqlg18PwvJKwW3tfHsCzd4T2i18gspc7DDY_q-XY8viwQCa2Vhm5PC0f2G_FA2qapU2xg5dqHlq21A763rrBoRuo021SgQfoykChkzPSvRoKanFzmDnVSLi-Mg4TCjaWZ1AeySSCTWjWnsCxEhvUK5kqyx4P7Sb1B776q__PG9ICtqNo1mXjpW4Rc73U3JwqTByIIyL2JdhlhifLSwN4n_2N-VbtSwjkdYk_oZUP1AZNT5wA"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
     }
     
     try:
@@ -4255,6 +4255,143 @@ def api_sell_option():
             'message': f'❌ Sell order failed: {str(e)}'
         })
 
+@app.route('/api/cancel-pending-position', methods=['POST'])
+def api_cancel_pending_position():
+    """Cancel pending position to prevent further auto buy/sell"""
+    data = request.get_json()
+    position_key = data.get('position_key')
+    
+    if not position_key:
+        return jsonify({
+            'success': False,
+            'message': 'Position key is required'
+        })
+    
+    print(f"🚨 Cancelling pending position: {position_key}")
+    
+    # Find and update the position in auto positions
+    position_found = False
+    for pos in app_state.get('auto_positions', []):
+        # Match by position key - try multiple formats
+        pos_key = pos.get('id')  # First try ID
+        
+        if not pos_key:
+            # Try strike-type format
+            pos_key = f"{pos.get('strike', '')}-{pos.get('type', '')}"
+        
+        # Also try symbol format for comparison
+        pos_symbol_key = None
+        if pos.get('strike') and pos.get('type'):
+            pos_symbol_key = f"{pos.get('type', '')}{pos.get('strike', '')}"
+        
+        print(f"🔎 Checking auto position: ID={pos.get('id')}, strike-type={pos_key}, symbol={pos_symbol_key}")
+        
+        # Check if any of the keys match
+        if pos_key == position_key or (pos_symbol_key and pos_symbol_key == position_key):
+            # Set status to CANCELLED and disable waiting_for_autobuy
+            pos['status'] = 'CANCELLED'
+            pos['waiting_for_autobuy'] = False
+            position_found = True
+            print(f"✅ Cancelled pending position: {position_key} -> matched {pos_key or pos_symbol_key}")
+            # Remove the auto position from active auto positions so it no longer appears as PENDING
+            try:
+                app_state['auto_positions'].remove(pos)
+                print(f"🗑️ Removed auto position from app_state['auto_positions']: {position_key}")
+            except Exception as e:
+                print(f"⚠️ Failed to remove auto position from list: {e}")
+            break
+
+    if not position_found:
+        # If not found in auto_positions, collect available auto position keys for debugging
+        available_keys = []
+        for pos in app_state.get('auto_positions', []):
+            k = pos.get('id') or f"{pos.get('strike', '')}-{pos.get('type', '')}"
+            available_keys.append(k)
+
+        print(f"⚠️ Pending position not found in auto_positions: {position_key}. Available keys: {available_keys}")
+        # Continue execution to attempt removal from paper_positions and emit updates.
+        # Treat missing auto position as idempotent (already cancelled/removed).
+
+    # Also remove matching entries from paper_positions (if any) so pending row disappears
+    removed_paper = 0
+    try:
+        new_paper_positions = []
+        for p in app_state.get('paper_positions', []):
+            # Match by id or tradingsymbol or strike-type
+            p_key = p.get('id') or p.get('tradingsymbol') or f"paper_{p.get('mode','paper')}_{p.get('timestamp', '')}"
+            if p_key == position_key or p.get('tradingsymbol') == position_key:
+                print(f"🗑️ Removing matching paper position: {p_key}")
+                removed_paper += 1
+                continue
+            # Try matching by strike-type if present in position_key
+            try:
+                if '-' in position_key:
+                    parts = position_key.split('-')
+                    if len(parts) >= 2:
+                        strike_part = parts[0]
+                        type_part = parts[1]
+                        if str(p.get('strike')) == strike_part and (p.get('option_type') == type_part or p.get('type') == type_part):
+                            print(f"🗑️ Removing paper position by strike-type match: {p_key}")
+                            removed_paper += 1
+                            continue
+            except Exception:
+                pass
+            new_paper_positions.append(p)
+        if removed_paper > 0:
+            app_state['paper_positions'] = new_paper_positions
+            print(f"🗑️ Removed {removed_paper} paper_positions matching {position_key}")
+    except Exception as e:
+        print(f"⚠️ Error while removing paper positions: {e}")
+
+    # Save updated positions to file (use auto_positions)
+    try:
+        with open('auto_positions.json', 'w') as f:
+            json.dump(app_state.get('auto_positions', []), f, indent=2, default=str)
+        print(f"💾 Saved cancelled position status to auto_positions.json")
+    except Exception as e:
+        print(f"⚠️ Failed to save auto_positions to file: {e}")
+
+    # Emit updated positions to frontend so pending row disappears without reload
+    try:
+        with app.test_request_context():
+            positions_resp = api_positions().get_json()
+            socketio.emit('positions_update', positions_resp)
+            # Also emit auto positions update
+            auto_resp = api_auto_trading_positions().get_json()
+            socketio.emit('auto_positions_update', auto_resp)
+            print("🔔 Emitted updated positions to frontend after cancel")
+    except Exception as e:
+        print(f"⚠️ Failed to emit updated positions: {e}")
+    
+    return jsonify({
+        'success': True,
+        'message': f'✅ Pending position cancelled: {position_key}. No further auto buy/sell will occur.'
+    })
+
+
+@app.route('/api/debug-auto-keys')
+def api_debug_auto_keys():
+    """Return current auto and paper position keys for debugging mismatches"""
+    keys = {
+        'auto_positions_keys': [],
+        'paper_positions_keys': [],
+        'auto_trading_positions_keys': []
+    }
+
+    for pos in app_state.get('auto_positions', []):
+        k = pos.get('id') or f"{pos.get('strike', '')}-{pos.get('type', '')}"
+        keys['auto_positions_keys'].append(k)
+
+    for pos in app_state.get('paper_positions', []):
+        k = pos.get('id') or pos.get('tradingsymbol') or f"paper_{pos.get('mode', 'paper')}_{int(time.time())}"
+        keys['paper_positions_keys'].append(k)
+
+    for pos in app_state.get('auto_trading_positions', []):
+        k = pos.get('id') or f"{pos.get('strike', '')}-{pos.get('option_type', '')}"
+        keys['auto_trading_positions_keys'].append(k)
+
+    return jsonify({'success': True, 'keys': keys})
+
 @app.route('/api/positions')
 def api_positions():
     """Get positions from Paper Trading or Zerodha account (based on mode)"""
@@ -4483,12 +4620,14 @@ def api_positions():
                         'realized_pnl': auto_pos.get('realized_pnl', 0),
                         'instrument_token': '',  # No token since sold
                         'exchange': 'NFO',
-                        'product': 'MIS',
+                        'product': 'PENDING',  # Changed from 'MIS' to 'PENDING' for clarity
                         'strike': auto_pos.get('strike'),
                         'option_type': auto_pos.get('type', auto_pos.get('option_type')),
                         'stop_loss_price': auto_pos.get('last_stop_loss_price', '-'),
                         'status': 'Cooldown Pending' if (auto_pos.get('auto_buy_count', 0) >= 5 and app_state.get('cooldown_enabled', True)) else 'Pending Auto-Buy',
-                        'auto_buy_count': auto_pos.get('auto_buy_count', 0)
+                        'auto_buy_count': auto_pos.get('auto_buy_count', 0),
+                        'waiting_for_autobuy': True,  # CRITICAL: Set this flag so frontend shows cancel button
+                        'id': auto_pos.get('id')  # Include the ID for cancel functionality
                     }
                     all_positions.append(pending_pos)
         
@@ -4989,191 +5128,102 @@ def api_sell_individual_position():
             'message': f'Error selling position: {str(e)}'
         })
 
-@app.route('/api/update-manual-stop-loss', methods=['POST'])
+@app.route("/api/update-manual-stop-loss", methods=["POST"])
 def update_manual_stop_loss():
-    """Update stop loss manually - but algorithm takes precedence"""
+    """Update stop loss manually for a position, ensuring both paper and auto lists are synced."""
     try:
         data = request.get_json()
-        position_key = data.get('position_key')
-        new_stop_loss = float(data.get('new_stop_loss', 0))
-        
+        position_key = data.get("position_key")
+        new_stop_loss = float(data.get("new_stop_loss", 0))
+
         if not position_key or new_stop_loss <= 0:
-            return jsonify({
-                'success': False,
-                'message': 'Invalid position key or stop loss value'
-            })
-        
-        # Find the position in auto_positions
-        position_found = None
-        print(f"🔍 SEARCHING FOR POSITION: {position_key}")
-        
-        # First try auto_positions
-        for pos in app_state['auto_positions']:
-            # Try multiple key formats to match position
-            strike = pos.get('strike')
-            pos_type = pos.get('type') or pos.get('option_type')
-            
-            possible_keys = [
-                pos.get('tradingsymbol', ''),
-                f"{strike}_{pos_type}" if strike and pos_type else '',
-                f"{strike}{pos_type}" if strike and pos_type else '',
-                f"{pos_type}{strike}" if strike and pos_type else '',  # Handle CE55700.0 format
-                f"{pos_type}{int(float(strike))}" if strike and pos_type else '',  # Handle CE55700 format
-                pos.get('symbol', ''),
-                pos.get('id', '')
-            ]
-            
-            # Also handle float strikes specially
-            if strike and pos_type:
-                try:
-                    strike_float = float(strike)
-                    strike_int = int(strike_float)
-                    possible_keys.extend([
-                        f"{pos_type}{strike_float}",  # CE55700.0
-                        f"{pos_type}{strike_int}",    # CE55700
-                        f"{strike_float}_{pos_type}",  # 55700.0_CE
-                        f"{strike_int}_{pos_type}",    # 55700_CE
-                        f"{strike_float}{pos_type}",   # 55700.0CE
-                        f"{strike_int}{pos_type}"      # 55700CE
-                    ])
-                except (ValueError, TypeError):
-                    pass
-            
-            # Clean and compare keys
-            for key in possible_keys:
-                if key:
-                    clean_key = str(key).replace('/', '_').replace(' ', '_')
-                    # More flexible matching - handle decimal points
-                    clean_position_key = position_key.replace('_', '').replace('.', '')
-                    clean_match_key = clean_key.replace('_', '').replace('.', '')
-                    
-                    if (clean_key in position_key or position_key in clean_key or
-                        clean_position_key == clean_match_key or
-                        clean_position_key in clean_match_key or
-                        clean_match_key in clean_position_key):
-                        position_found = pos
-                        print(f"✅ FOUND AUTO POSITION: {key} -> {clean_key} (matched with {position_key})")
-                        break
-            
-            if position_found:
-                break
-        
-        if not position_found:
-            # Try to find in paper positions
-            print(f"🔍 SEARCHING PAPER POSITIONS...")
-            for pos in app_state['paper_positions']:
-                strike = pos.get('strike')
-                pos_type = pos.get('type') or pos.get('option_type')
-                
-                possible_keys = [
-                    pos.get('tradingsymbol', ''),
-                    f"{strike}_{pos_type}" if strike and pos_type else '',
-                    f"{strike}{pos_type}" if strike and pos_type else '',
-                    f"{pos_type}{strike}" if strike and pos_type else '',  # Handle CE55700.0 format
-                    f"{pos_type}{int(float(strike))}" if strike and pos_type else '',  # Handle CE55700 format
-                    pos.get('symbol', ''),
-                    pos.get('id', '')
-                ]
-                
-                # Also handle float strikes specially
-                if strike and pos_type:
-                    try:
-                        strike_float = float(strike)
-                        strike_int = int(strike_float)
-                        possible_keys.extend([
-                            f"{pos_type}{strike_float}",  # CE55700.0
-                            f"{pos_type}{strike_int}",    # CE55700
-                            f"{strike_float}_{pos_type}",  # 55700.0_CE
-                            f"{strike_int}_{pos_type}",    # 55700_CE
-                            f"{strike_float}{pos_type}",   # 55700.0CE
-                            f"{strike_int}{pos_type}"      # 55700CE
-                        ])
-                    except (ValueError, TypeError):
-                        pass
-                
-                for key in possible_keys:
-                    if key:
-                        clean_key = str(key).replace('/', '_').replace(' ', '_')
-                        # More flexible matching - handle decimal points
-                        clean_position_key = position_key.replace('_', '').replace('.', '')
-                        clean_match_key = clean_key.replace('_', '').replace('.', '')
-                        
-                        if (clean_key in position_key or position_key in clean_key or
-                            clean_position_key == clean_match_key or
-                            clean_position_key in clean_match_key or
-                            clean_match_key in clean_position_key):
-                            position_found = pos
-                            print(f"✅ FOUND PAPER POSITION: {key} -> {clean_key} (matched with {position_key})")
-                            break
-                
-                if position_found:
-                    break
-        
-        if not position_found:
-            # Debug: Print all available positions for troubleshooting
-            print(f"❌ POSITION NOT FOUND! Available positions:")
-            print(f"Auto positions: {len(app_state['auto_positions'])}")
-            for i, pos in enumerate(app_state['auto_positions']):
-                print(f"  Auto[{i}]: strike={pos.get('strike')}, type={pos.get('type')}, symbol={pos.get('symbol')}, tradingsymbol={pos.get('tradingsymbol')}")
-            
-            print(f"Paper positions: {len(app_state['paper_positions'])}")
-            for i, pos in enumerate(app_state['paper_positions']):
-                print(f"  Paper[{i}]: strike={pos.get('strike')}, type={pos.get('type')}, symbol={pos.get('symbol')}, tradingsymbol={pos.get('tradingsymbol')}")
-            
-            return jsonify({
-                'success': False,
-                'message': f'Position not found for key: {position_key}'
-            })
-        
-        # Get current price for reference (no validation - user can set any stop loss they want)
-        current_price = position_found.get('current_price', position_found.get('last_price', 0))
-        
-        # Store the manual stop loss request
-        old_stop_loss = position_found.get('stop_loss_price', 0)
-        
-        # Update the stop loss with a flag indicating it was manually set
-        position_found['stop_loss_price'] = new_stop_loss
-        position_found['manual_stop_loss_set'] = True
-        position_found['manual_stop_loss_time'] = get_ist_now()
-        
-        # For advanced algorithm, also update the advanced_stop_loss if it exists
-        if 'advanced_stop_loss' in position_found:
-            # Only allow manual update if it's higher than algorithm would set
-            algorithm_sl = position_found.get('advanced_stop_loss', 0)
-            if new_stop_loss > algorithm_sl:
-                position_found['advanced_stop_loss'] = new_stop_loss
-                message = f"✅ Manual stop loss updated: ₹{old_stop_loss:.2f} → ₹{new_stop_loss:.2f} (Above algorithm)"
-            else:
-                message = f"⚠️ Manual stop loss set: ₹{old_stop_loss:.2f} → ₹{new_stop_loss:.2f} (Algorithm may override)"
-        else:
-            message = f"✅ Stop loss updated: ₹{old_stop_loss:.2f} → ₹{new_stop_loss:.2f}"
-        
-        # Log the manual update with detailed debugging
-        print(f"🔧 MANUAL STOP LOSS UPDATE: {position_key} | {old_stop_loss:.2f} → {new_stop_loss:.2f} | Current: ₹{current_price:.2f}")
-        print(f"   Position Details: strike={position_found.get('strike')}, type={position_found.get('type')}")
-        print(f"   Manual flags: manual_stop_loss_set=True, manual_stop_loss_time={get_ist_now()}")
-        print(f"   Algorithm type: {app_state.get('trading_algorithm', 'unknown')}")
-        
-        return jsonify({
-            'success': True,
-            'message': message,
-            'old_stop_loss': old_stop_loss,
-            'new_stop_loss': new_stop_loss,
-            'current_price': current_price,
-            'position_details': {
-                'strike': position_found.get('strike'),
-                'type': position_found.get('type'),
-                'manual_protection_active': True,
-                'protection_expires_in_minutes': 30
+            return jsonify(
+                {"success": False, "message": "Invalid position key or stop loss value"}
+            ), 400
+
+        position_updated = False
+        target_position_details = {}
+
+        def apply_update(pos):
+            old_stop_loss = pos.get("stop_loss_price", 0)
+            pos["stop_loss_price"] = new_stop_loss
+            pos["manual_stop_loss_set"] = True
+            pos["manual_stop_loss_time"] = get_ist_now()
+            if "advanced_stop_loss" in pos:
+                pos["advanced_stop_loss"] = new_stop_loss
+            return {
+                "strike": pos.get("strike"),
+                "type": pos.get("type", pos.get("option_type")),
+                "old_stop_loss": old_stop_loss,
             }
-        })
-        
+
+        for pos_list in [app_state["auto_positions"], app_state["paper_positions"]]:
+            for pos in pos_list:
+                match_found = False
+                # 1. Primary Match: Check by unique ID (for paper trades)
+                if pos.get("id") == position_key:
+                    match_found = True
+                # 2. Secondary Match: Check by full tradingsymbol (for live Zerodha trades)
+                elif pos.get("tradingsymbol") == position_key:
+                    match_found = True
+                else:
+                    # 3. Fallback Match: Parse the key (e.g., "CE56100") and match components
+                    key_match = re.match(r"^(CE|PE)(\d+(\.\d+)?)$", position_key)
+                    if key_match:
+                        key_type = key_match.group(1)
+                        key_strike = float(key_match.group(2))
+
+                        pos_strike_val = pos.get("strike")
+                        pos_type_val = pos.get("type") or pos.get("option_type")
+
+                        if pos_strike_val is not None and pos_type_val:
+                            try:
+                                if (
+                                    pos_type_val == key_type
+                                    and float(pos_strike_val) == key_strike
+                                ):
+                                    match_found = True
+                            except (ValueError, TypeError):
+                                pass  # Ignore casting errors
+
+                if match_found:
+                    details = apply_update(pos)
+                    if not target_position_details:
+                        target_position_details = details
+                    position_updated = True
+                    # Do not break; ensure updates across both lists if needed
+
+        if position_updated:
+            strike = target_position_details.get("strike", "N/A")
+            pos_type = target_position_details.get("type", "N/A")
+            print(
+                f"🔧 MANUAL STOP LOSS UPDATED: {strike} {pos_type} -> ₹{new_stop_loss:.2f}"
+            )
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"✅ Stop loss for {strike} {pos_type} updated to ₹{new_stop_loss:.2f}",
+                    "new_stop_loss": new_stop_loss,
+                    "position_details": target_position_details,
+                }
+            )
+        else:
+            print(
+                f"❌ POSITION NOT FOUND for manual SL update with key: {position_key}"
+            )
+            return jsonify(
+                {
+                    "success": False,
+                    "message": f"Position not found for key: {position_key}",
+                }
+            ), 404
+
     except Exception as e:
         print(f"❌ Error updating manual stop loss: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': f'Error updating stop loss: {str(e)}'
-        })
+        traceback.print_exc()
+        return jsonify(
+            {"success": False, "message": f"Error updating stop loss: {str(e)}"}
+        ), 500
 
 # Auto Trading API Routes - AUTO TRADING IS ALWAYS ENABLED
 
@@ -5993,7 +6043,7 @@ def api_auto_start_option_chain():
         expiry_url = f"https://history.truedata.in/getSymbolExpiryList?symbol={symbol}&response=csv"
         headers = {
             "accept": "application/json",
-            "authorization": "Bearer 1UWnwzYEyRWPUQspRNBQevVuCF3ez0MP-XUCWbFucOoU3cQn8VmWysdkVpiTJXWIWhoGcBeETvJRIR5OiwytBbTKSOGtdIoLJX1C3zwqKmwryAApOPwGfOWJiJ-kKkCdkf1R1iS6U7iH8R94FluODYCZMuAx-by14q0lUj5vys2Khn2f4hBbobFOoZ4WMC24jRpLyIGesbI50RnAAyMGkyBqzRTuNplOlywcGFPsK5QsSwkCWqMGNr6m01efwCo1q5PBVTFTEHlshjnAR7g5hg"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
+            "authorization": "Bearer 4y5QKOFZHnnsWR72fRYjmzrPtmGxmN-7QJiQy6zqlg18PwvJKwW3tfHsCzd4T2i18gspc7DDY_q-XY8viwQCa2Vhm5PC0f2G_FA2qapU2xg5dqHlq21A763rrBoRuo021SgQfoykChkzPSvRoKanFzmDnVSLi-Mg4TCjaWZ1AeySSCTWjWnsCxEhvUK5kqyx4P7Sb1B776q__PG9ICtqNo1mXjpW4Rc73U3JwqTByIIyL2JdhlhifLSwN4n_2N-VbtSwjkdYk_oZUP1AZNT5wA"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
         }
         
         response = requests.get(expiry_url, headers=headers)
@@ -6001,7 +6051,7 @@ def api_auto_start_option_chain():
             expiry_list = response.text.strip().split('\n')[1:]
             expiry_list = [x.strip() for x in expiry_list if x.strip()]
             if expiry_list:
-                expiry = expiry_list[0]  # Get first expiry
+                expiry = expiry_list[0]  # Get first expiry 
                 
                 # Ensure expiry is a string, not dict
                 if isinstance(expiry, dict):

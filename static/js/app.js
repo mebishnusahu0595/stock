@@ -1945,7 +1945,32 @@ function getSellButtonHtml(pos, symbolData) {
     const sellPrice = pos.last_price !== undefined ? Number(pos.last_price) : pos.current_price !== undefined ? Number(pos.current_price) : 0;
     
     if (pos.waiting_for_autobuy) {
-        return `<button class="btn btn-secondary btn-sm" disabled title="Position sold - waiting for auto-buy">Pending</button>`;
+        // Create position key for cancel button - try multiple approaches
+        let positionKey = pos.id; // First try ID if available
+        
+        if (!positionKey && pos.strike && (pos.type || pos.option_type)) {
+            // Use strike-type format
+            positionKey = `${pos.strike}-${pos.type || pos.option_type}`;
+        }
+        
+        if (!positionKey && (pos.tradingsymbol || pos.symbol)) {
+            // Extract from symbol like "CE56800" -> "56800-CE"
+            const symbol = pos.tradingsymbol || pos.symbol;
+            const match = symbol.match(/([CP]E)(\d+)/);
+            if (match) {
+                const type = match[1];
+                const strike = match[2];
+                positionKey = `${strike}-${type}`;
+            }
+        }
+        
+        if (!positionKey) {
+            // Fallback - use symbol as key
+            positionKey = pos.tradingsymbol || pos.symbol || 'unknown';
+        }
+        
+        console.log(`🔑 Generated position key for cancel: ${positionKey} from`, pos);
+        return `<button class="btn btn-warning btn-sm cancel-pending-btn" data-position-key="${positionKey}" title="Cancel pending auto-buy/sell">Cancel</button>`;
     } else if (symbolData.sellStrike && symbolData.sellOptionType && sellPrice > 0) {
         return `<button class="btn btn-danger btn-sm sell-position-btn" data-strike="${symbolData.sellStrike}" data-option-type="${symbolData.sellOptionType}" data-price="${sellPrice}" title="Sell ${symbolData.sellStrike} ${symbolData.sellOptionType}">Sell</button>`;
     } else if (pos.tradingsymbol) {
@@ -2011,6 +2036,31 @@ function attachSellButtonHandlers() {
             const symbol = this.getAttribute('data-symbol');
             const price = this.getAttribute('data-price');
             manualSell(symbol, parseFloat(price));
+        });
+    });
+    
+    // Handle cancel pending buttons
+    document.querySelectorAll('.cancel-pending-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const positionKey = this.getAttribute('data-position-key');
+            // Disable button immediately to prevent double-requests
+            this.disabled = true;
+            this.innerText = 'Cancelling...';
+            cancelPendingPosition(positionKey).then(() => {
+                // nothing here, server will emit updates
+            }).catch(() => {
+                // Re-enable on error
+                this.disabled = false;
+                this.innerText = 'Cancel';
+            });
+        });
+    });
+    
+    // Handle cancel pending buttons
+    document.querySelectorAll('.cancel-pending-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const positionKey = this.getAttribute('data-position-key');
+            cancelPendingPosition(positionKey);
         });
     });
     
@@ -2286,6 +2336,64 @@ async function manualSell(tradingsymbol, currentPrice = 0) {
     } catch (error) {
         console.error('Error in manual sell:', error);
         showToast('Failed to sell position', 'error');
+    }
+}
+
+// Cancel pending position (stop auto buy/sell)
+async function cancelPendingPosition(positionKey) {
+    if (!positionKey) return;
+    const confirmed = confirm('Are you sure you want to cancel this pending position? This will prevent further auto buy/sell for this position.');
+    if (!confirmed) return;
+
+    try {
+        const resp = await fetch('/api/cancel-pending-position', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ position_key: positionKey })
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showToast(data.message, 'success');
+            setTimeout(() => { window.location.reload(); }, 800);
+        } else {
+            console.error('Cancel failed:', data);
+            let msg = data.message || 'Failed to cancel pending position';
+            if (data.available_keys) msg += '\nAvailable keys: ' + data.available_keys.join(', ');
+            showToast(msg, 'error');
+        }
+    } catch (err) {
+        console.error('Network error cancelling pending position:', err);
+        showToast('Network error cancelling pending position', 'error');
+    }
+}
+
+// 🚨 Cancel pending position (stop auto buy/sell)
+async function cancelPendingPosition(positionKey) {
+    if (!positionKey) return;
+    
+    const confirmed = confirm('Are you sure you want to cancel this pending position? This will prevent further auto buy/sell for this position.');
+    if (!confirmed) return;
+    
+    try {
+        const response = await fetch('/api/cancel-pending-position', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ position_key: positionKey })
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast(data.message, 'success');
+            setTimeout(() => {
+                loadPositions();
+            }, 1000);
+        } else {
+            showToast(data.message, 'error');
+        }
+    } catch (error) {
+        console.error('Error cancelling pending position:', error);
+        showToast('Failed to cancel pending position', 'error');
     }
 }
 
