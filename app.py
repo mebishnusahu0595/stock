@@ -593,18 +593,28 @@ def update_advanced_algorithm(position, new_price):
         # Update traditional stop_loss_price for display purposes
         position['stop_loss_price'] = position['advanced_stop_loss']
     
-    # 🚨 CRITICAL FIX: Below Entry-10 should trigger immediate sell, not disable algorithm
-    if current_price < (entry_price - 10):
-        print(f"🚨 BELOW ENTRY-10: Price ₹{current_price} < Entry-10 (₹{entry_price - 10}) - IMMEDIATE SELL TRIGGER!")
+    # 🚨 CRITICAL FIX: Below current stop loss should trigger immediate sell
+    # Emergency stop loss triggers at current SL level, not fixed entry-10
+    manual_sl_active = position.get('manual_stop_loss_set', False)
+    manual_sl_value = position.get('stop_loss_price', 0)
+    current_sl = position['stop_loss_price']
+    
+    if current_price < current_sl:
+        # Check if manual stop loss should prevent emergency sell (already above)
+        if manual_sl_active and current_price > manual_sl_value:
+            print(f"🛡️ MANUAL SL PROTECTION: Price ₹{current_price} > Manual SL ₹{manual_sl_value} - Skipping emergency sell")
+            return False
+        
+        print(f"🚨 BELOW STOP LOSS: Price ₹{current_price} < SL ₹{current_sl} - IMMEDIATE SELL TRIGGER!")
         
         # If not already sold or waiting for auto-buy, trigger immediate sell
         if (not position.get('waiting_for_autobuy', False) and 
             not position.get('sell_triggered', False)):
             
             profit = current_price - entry_price
-            reason = 'Emergency Stop Loss - Below Entry-10'
+            reason = 'Emergency Stop Loss - Below Stop Loss'
             
-            print(f"🚨 EMERGENCY STOP LOSS TRIGGERED @ ₹{current_price} (Loss: ₹{abs(profit):.2f})")
+            print(f"🚨 EMERGENCY STOP LOSS TRIGGERED @ ₹{current_price} (SL: ₹{current_sl}, Loss: ₹{abs(profit):.2f})")
             
             sell_executed = execute_auto_sell(position, reason=reason)
             if sell_executed:
@@ -894,6 +904,16 @@ def execute_auto_sell(position, reason='Stop Loss'):
     sell_price = position['current_price']
     option_type = position.get('option_type', position.get('type'))
     
+    # For emergency stop loss, use the stop loss price instead of current price for deterministic fills
+    if 'Emergency Stop Loss' in reason:
+        sell_price = position.get('stop_loss_price', sell_price)
+        print(f"🛡️ EMERGENCY SELL: Using stop loss price ₹{sell_price} instead of current price ₹{position['current_price']}")
+    
+    # For manual stop loss, also use the stop loss price for deterministic fills
+    if 'Manual Stop Loss' in reason:
+        sell_price = position.get('stop_loss_price', sell_price)
+        print(f"🛡️ MANUAL SL SELL: Using stop loss price ₹{sell_price} instead of current price ₹{position['current_price']}")
+    
     # Check if we're in paper trading mode
     if app_state['paper_trading_enabled']:
         # Paper Trading Mode - Execute virtual sell
@@ -1076,16 +1096,36 @@ def execute_auto_sell(position, reason='Stop Loss'):
         
         print(f"[DEBUG] AUTO SELL - Placing order for: {tradingsymbol}")
         
+        # Determine order type based on reason
+        if 'Stop Loss' in reason or 'Manual Stop Loss' in reason:
+            # Use Stop Loss order for deterministic fills at SL price
+            order_type = app_state['kite'].ORDER_TYPE_SL
+            trigger_price = sell_price
+            limit_price = sell_price
+            print(f"[DEBUG] AUTO SELL - Using SL order: trigger={trigger_price}, limit={limit_price}")
+        else:
+            # Use Market order for other sells
+            order_type = app_state['kite'].ORDER_TYPE_MARKET
+            trigger_price = None
+            limit_price = None
+            print(f"[DEBUG] AUTO SELL - Using MARKET order")
+        
         # Place the order
-        order_id = app_state['kite'].place_order(
-            variety=app_state['kite'].VARIETY_REGULAR,
-            exchange=app_state['kite'].EXCHANGE_NFO,
-            tradingsymbol=tradingsymbol,
-            transaction_type=app_state['kite'].TRANSACTION_TYPE_SELL,
-            quantity=position['qty'],
-            order_type=app_state['kite'].ORDER_TYPE_MARKET,
-            product=app_state['kite'].PRODUCT_MIS
-        )
+        order_params = {
+            'variety': app_state['kite'].VARIETY_REGULAR,
+            'exchange': app_state['kite'].EXCHANGE_NFO,
+            'tradingsymbol': tradingsymbol,
+            'transaction_type': app_state['kite'].TRANSACTION_TYPE_SELL,
+            'quantity': position['qty'],
+            'order_type': order_type,
+            'product': app_state['kite'].PRODUCT_MIS
+        }
+        
+        if order_type == app_state['kite'].ORDER_TYPE_SL:
+            order_params['trigger_price'] = trigger_price
+            order_params['price'] = limit_price
+        
+        order_id = app_state['kite'].place_order(**order_params)
         
         print(f"[SUCCESS] AUTO SELL order placed: {order_id}")
         return order_id
@@ -1697,6 +1737,10 @@ def update_trailing_stop_loss(position, algorithm='simple'):
             # 🚨 USER REQUIREMENT FIXED: SL = auto_buy_price + (steps × 10) [NO MINUS 10]
             new_trailing_stop_loss = auto_buy_price + (profit_steps * trailing_step)
 
+            # 🚨 CRITICAL FIX: Ensure stop loss is always below current price to prevent immediate sell trigger
+            if new_trailing_stop_loss >= current_price:
+                new_trailing_stop_loss = current_price - 0.01
+
             # 🚨 CRITICAL: NEVER let stop loss go below current_stop_loss
             position['stop_loss_price'] = max(new_trailing_stop_loss, current_stop_loss)
 
@@ -1722,6 +1766,10 @@ def update_trailing_stop_loss(position, algorithm='simple'):
             # 🚨 USER REQUIREMENT FIXED: SL = buy_price + (steps × 10) [NO MINUS 10]
             # Example: Buy 535.85, Price 562.70 → Steps = 2, SL = 535.85 + 20 = 555.85
             new_trailing_stop_loss = original_buy_price + (profit_steps * trailing_step)
+
+            # 🚨 CRITICAL FIX: Ensure stop loss is always below current price to prevent immediate sell trigger
+            if new_trailing_stop_loss >= current_price:
+                new_trailing_stop_loss = current_price - 0.01
 
             # 🚨 CRITICAL: NEVER let stop loss go below minimum_stop_loss
             old_stop_loss = position['stop_loss_price']
@@ -3341,7 +3389,7 @@ def api_expiry_list(symbol):
     expiry_url = f"https://history.truedata.in/getSymbolExpiryList?symbol={symbol}&response=csv"
     headers = {
         "accept": "application/json",
-        "authorization": "Bearer 4y5QKOFZHnnsWR72fRYjmzrPtmGxmN-7QJiQy6zqlg18PwvJKwW3tfHsCzd4T2i18gspc7DDY_q-XY8viwQCa2Vhm5PC0f2G_FA2qapU2xg5dqHlq21A763rrBoRuo021SgQfoykChkzPSvRoKanFzmDnVSLi-Mg4TCjaWZ1AeySSCTWjWnsCxEhvUK5kqyx4P7Sb1B776q__PG9ICtqNo1mXjpW4Rc73U3JwqTByIIyL2JdhlhifLSwN4n_2N-VbtSwjkdYk_oZUP1AZNT5wA"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
+        "authorization": "Bearer Z9b3sAY0Fuqqj61NI4oVmYDYri8kO08Q-n3KyZM9vUWVL67jPeLyXxgSead9YtuJucaV25OFd3ta0nZs3JqnPETwgJDpESx7tqBVjMirf3rRicko5RlLVya_eJiie2FM5OP1I2iojc5cz8tPL1Yo18JUTWY7kaygbCD636mrlpDTUN9dcSJCcYAIveDMh1RINcJFWSm9xD0qgVZoZq317Yed8Rl_JGa2AImU0EYgQtgRbxLxLVTRsDVCKOO56EvQU6Mu_AtPLBG1VUC4QSRvoQ"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
     }
     
     try:
@@ -6043,7 +6091,7 @@ def api_auto_start_option_chain():
         expiry_url = f"https://history.truedata.in/getSymbolExpiryList?symbol={symbol}&response=csv"
         headers = {
             "accept": "application/json",
-            "authorization": "Bearer 4y5QKOFZHnnsWR72fRYjmzrPtmGxmN-7QJiQy6zqlg18PwvJKwW3tfHsCzd4T2i18gspc7DDY_q-XY8viwQCa2Vhm5PC0f2G_FA2qapU2xg5dqHlq21A763rrBoRuo021SgQfoykChkzPSvRoKanFzmDnVSLi-Mg4TCjaWZ1AeySSCTWjWnsCxEhvUK5kqyx4P7Sb1B776q__PG9ICtqNo1mXjpW4Rc73U3JwqTByIIyL2JdhlhifLSwN4n_2N-VbtSwjkdYk_oZUP1AZNT5wA"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
+            "authorization": "Bearer Z9b3sAY0Fuqqj61NI4oVmYDYri8kO08Q-n3KyZM9vUWVL67jPeLyXxgSead9YtuJucaV25OFd3ta0nZs3JqnPETwgJDpESx7tqBVjMirf3rRicko5RlLVya_eJiie2FM5OP1I2iojc5cz8tPL1Yo18JUTWY7kaygbCD636mrlpDTUN9dcSJCcYAIveDMh1RINcJFWSm9xD0qgVZoZq317Yed8Rl_JGa2AImU0EYgQtgRbxLxLVTRsDVCKOO56EvQU6Mu_AtPLBG1VUC4QSRvoQ"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
         }
         
         response = requests.get(expiry_url, headers=headers)
@@ -6051,7 +6099,7 @@ def api_auto_start_option_chain():
             expiry_list = response.text.strip().split('\n')[1:]
             expiry_list = [x.strip() for x in expiry_list if x.strip()]
             if expiry_list:
-                expiry = expiry_list[0]  # Get first expiry 
+                expiry = expiry_list[0]  # Get first expiry
                 
                 # Ensure expiry is a string, not dict
                 if isinstance(expiry, dict):
