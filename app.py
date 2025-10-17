@@ -99,6 +99,19 @@ app_state = {
     }
 }
 
+# Short grace period (seconds) after user manually updates stop loss to avoid immediate sell
+MANUAL_SL_GRACE_SECONDS = 5
+
+def manual_sl_recently_updated(position, grace_seconds=MANUAL_SL_GRACE_SECONDS):
+    """Return True if manual stop loss was updated within the last `grace_seconds` seconds."""
+    ts = position.get('manual_stop_loss_time')
+    if not ts:
+        return False
+    try:
+        return (get_ist_now() - ts).total_seconds() < grace_seconds
+    except Exception:
+        return False
+
 # Lot sizes by symbol
 LOT_SIZES = {
     "NIFTY": 75,
@@ -413,6 +426,10 @@ def update_simple_algorithm(position, new_price):
     
     # FIXED: Enhanced trigger logic for simple algorithm
     trigger_condition = False
+    # If manual stop loss was updated very recently, skip trigger check to avoid immediate sell
+    if manual_sl_recently_updated(position):
+        print(f"🛡️ MANUAL SL GRACE ACTIVE - skipping trigger check for {position.get('strike')}")
+        return False
     if manual_sl_active:
         # Use manual stop loss value
         if stop_loss_price > buy_price:
@@ -600,6 +617,10 @@ def update_advanced_algorithm(position, new_price):
     current_sl = position['stop_loss_price']
     
     if current_price < current_sl:
+        # If manual SL was just updated, skip emergency sell for short grace period
+        if manual_sl_recently_updated(position):
+            print(f"🛡️ MANUAL SL RECENTLY UPDATED - grace active, skipping emergency sell for {position.get('strike')}")
+            return False
         # Check if manual stop loss should prevent emergency sell (already above)
         if manual_sl_active and current_price > manual_sl_value:
             print(f"🛡️ MANUAL SL PROTECTION: Price ₹{current_price} > Manual SL ₹{manual_sl_value} - Skipping emergency sell")
