@@ -369,13 +369,24 @@ async function handleLogin(event) {
 
 async function handleLogout() {
     try {
-        await fetch('/logout', { method: 'POST' });
+        const response = await fetch('/logout', { method: 'POST' });
+        const data = await response.json();
+        
         sessionStorage.removeItem('loginToken');
         isLoggedIn = false;
         showLoginModal();
-        showToast('Logged out successfully', 'info');
+        
+        // Show appropriate message based on Zerodha disconnection
+        if (data.zerodha_disconnected) {
+            showToast('🔌 Logged out successfully. Zerodha connection disconnected for safety.', 'success');
+        } else {
+            showToast('Logged out successfully', 'info');
+        }
+        
+        console.log('Logout:', data.message);
     } catch (error) {
         console.error('Logout error:', error);
+        showToast('Logged out (connection error)', 'warning');
     }
 }
 
@@ -1774,7 +1785,17 @@ function updateDynamicValues(positions) {
         const currentPriceCell = row.querySelector('.current-price-cell');
         if (currentPriceCell) {
             const currentPrice = pos.last_price !== undefined ? Number(pos.last_price) : pos.current_price !== undefined ? Number(pos.current_price) : 0;
-            currentPriceCell.textContent = `₹${currentPrice.toFixed(2)}`;
+            const newPriceText = `₹${currentPrice.toFixed(2)}`;
+            
+            // Only update if changed (performance optimization)
+            if (currentPriceCell.textContent !== newPriceText) {
+                currentPriceCell.textContent = newPriceText;
+                // Flash animation for price change
+                currentPriceCell.style.background = '#fffacd';
+                setTimeout(() => {
+                    currentPriceCell.style.background = '';
+                }, 300);
+            }
         }
         
         // Update P&L and row class
@@ -1783,8 +1804,11 @@ function updateDynamicValues(positions) {
         
         const pnlCell = row.querySelector('.pnl-cell');
         if (pnlCell) {
-            pnlCell.textContent = `₹${pnl !== undefined ? Number(pnl).toFixed(2) : '-'}`;
-            pnlCell.className = `pnl-cell ${pnlClass}`;
+            const newPnlText = `₹${pnl !== undefined ? Number(pnl).toFixed(2) : '-'}`;
+            if (pnlCell.textContent !== newPnlText) {
+                pnlCell.textContent = newPnlText;
+                pnlCell.className = `pnl-cell ${pnlClass}`;
+            }
         }
         
         // Update row class for profit/loss styling
@@ -1798,50 +1822,50 @@ function updateDynamicValues(positions) {
             
             // Get current stop loss value from position data
             let newStopLossValue = 0;
-            if (pos.stop_loss_price !== undefined && pos.stop_loss_price !== null && pos.stop_loss_price > 0) {
-                newStopLossValue = Number(pos.stop_loss_price);
+            if (pos.stop_loss_price !== undefined && pos.stop_loss_price !== null && pos.stop_loss_price !== 'No SL' && pos.stop_loss_price !== '-') {
+                // Extract numeric value if it's a string like "₹204.80"
+                if (typeof pos.stop_loss_price === 'string') {
+                    const match = pos.stop_loss_price.match(/[\d.]+/);
+                    newStopLossValue = match ? Number(match[0]) : 0;
+                } else {
+                    newStopLossValue = Number(pos.stop_loss_price);
+                }
             } else if (pos.stop_loss !== undefined && pos.stop_loss !== null && pos.stop_loss > 0) {
                 newStopLossValue = Number(pos.stop_loss);
             }
             
-        // Handle stop loss updates more carefully
-        if (currentInput && newStopLossValue > 0) {
-            const currentInputValue = parseFloat(currentInput.value);
-            const originalValue = parseFloat(currentInput.getAttribute('data-original-value'));
-            
-            // Check if user recently updated the value (don't override immediately)
-            const inputChangedRecently = Math.abs(currentInputValue - originalValue) > 0.01;
-            const algorithmWantsChange = Math.abs(newStopLossValue - currentInputValue) > 0.01;
-            
-            console.log(`🔍 SL Update Check: Input=₹${currentInputValue}, Original=₹${originalValue}, Server=₹${newStopLossValue}`);
-            console.log(`   - User changed recently: ${inputChangedRecently}, Algorithm wants change: ${algorithmWantsChange}`);
-            
-            // Always update the original value to match server data
-            currentInput.setAttribute('data-original-value', newStopLossValue.toFixed(2));
-            
-            if (algorithmWantsChange && !inputChangedRecently) {
-                // Algorithm changed stop loss and user hasn't made recent changes
-                console.log(`🔄 Algorithm updated stop loss: ₹${currentInputValue} → ₹${newStopLossValue}`);
-                currentInput.value = newStopLossValue.toFixed(2);
+            // Handle stop loss updates more carefully
+            if (currentInput && newStopLossValue > 0) {
+                const currentInputValue = parseFloat(currentInput.value) || 0;
+                const originalValue = parseFloat(currentInput.getAttribute('data-original-value')) || 0;
                 
-                // Visual feedback that algorithm updated it
-                currentInput.style.background = '#cce5ff'; // Light blue
-                currentInput.style.borderColor = '#007bff'; // Blue border
-                setTimeout(() => {
-                    currentInput.style.background = '#f9f9f9';
-                    currentInput.style.borderColor = '#ddd';
-                }, 3000);
-            } else if (inputChangedRecently) {
-                console.log(`🔧 Preserving user's manual stop loss: ₹${currentInputValue} (server says ₹${newStopLossValue})`);
-                // Keep user's input but update the original value for comparison
-            } else {
-                // Values are the same, just update display
-                currentInput.value = newStopLossValue.toFixed(2);
+                // Check if user recently updated the value (don't override immediately)
+                const inputChangedRecently = Math.abs(currentInputValue - originalValue) > 0.01;
+                const algorithmWantsChange = Math.abs(newStopLossValue - currentInputValue) > 0.5; // Increased threshold to avoid flicker
+                
+                // Always update the original value to match server data
+                currentInput.setAttribute('data-original-value', newStopLossValue.toFixed(2));
+                
+                if (algorithmWantsChange && !inputChangedRecently) {
+                    // Algorithm changed stop loss and user hasn't made recent changes
+                    currentInput.value = newStopLossValue.toFixed(2);
+                    
+                    // Subtle visual feedback that algorithm updated it
+                    currentInput.style.borderColor = '#28a745'; // Green border
+                    setTimeout(() => {
+                        currentInput.style.borderColor = '#ddd';
+                    }, 1000);
+                } else if (!inputChangedRecently && currentInputValue === 0) {
+                    // Initial load - set the value
+                    currentInput.value = newStopLossValue.toFixed(2);
+                }
+                // If user changed recently, preserve their input
+            } else if (!currentInput || newStopLossValue === 0) {
+                // No input exists or no stop loss - rebuild this cell
+                needsUpdate = true;
             }
-        } else {
-            // No input exists or stop loss changed significantly - rebuild this cell
-            needsUpdate = true;
-        }            if (needsUpdate) {
+            
+            if (needsUpdate) {
                 stopLossCell.innerHTML = getStopLossDisplay(pos);
                 // Reattach handlers for this specific cell
                 attachStopLossHandlersForCell(stopLossCell);
@@ -1876,11 +1900,39 @@ function getStopLossDisplay(pos) {
     const positionKey = getPositionKey(pos);
     const stopLossId = `sl-input-${positionKey.replace(/[^a-zA-Z0-9]/g, '_')}`;
     
+    // 🔥 FIXED: Parse stop loss from string or number
     let stopLossValue = 0;
-    if (pos.stop_loss_price !== undefined && pos.stop_loss_price !== null && pos.stop_loss_price > 0) {
-        stopLossValue = Number(pos.stop_loss_price);
-    } else if (pos.stop_loss !== undefined && pos.stop_loss !== null && pos.stop_loss > 0) {
-        stopLossValue = Number(pos.stop_loss);
+    
+    // Try stop_loss_price first (can be string like "₹204.80" or number)
+    if (pos.stop_loss_price !== undefined && pos.stop_loss_price !== null && 
+        pos.stop_loss_price !== 'No SL' && pos.stop_loss_price !== '-') {
+        
+        if (typeof pos.stop_loss_price === 'string') {
+            // Extract number from string like "₹204.80"
+            const match = pos.stop_loss_price.match(/[\d.]+/);
+            stopLossValue = match ? parseFloat(match[0]) : 0;
+        } else {
+            stopLossValue = Number(pos.stop_loss_price);
+        }
+    }
+    
+    // Fallback to stop_loss field
+    if (stopLossValue === 0 && pos.stop_loss !== undefined && pos.stop_loss !== null && pos.stop_loss > 0) {
+        if (typeof pos.stop_loss === 'string') {
+            const match = pos.stop_loss.match(/[\d.]+/);
+            stopLossValue = match ? parseFloat(match[0]) : 0;
+        } else {
+            stopLossValue = Number(pos.stop_loss);
+        }
+    }
+    
+    // 🔥 DEBUG: Log what we received
+    if (stopLossValue === 0) {
+        console.log(`⚠️ No valid stop loss for ${pos.tradingsymbol || pos.strike}:`, {
+            stop_loss_price: pos.stop_loss_price,
+            stop_loss: pos.stop_loss,
+            parsed: stopLossValue
+        });
     }
     
     if (stopLossValue > 0) {
