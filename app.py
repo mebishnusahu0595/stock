@@ -19,10 +19,31 @@ import time
 import sqlite3
 import re
 import traceback
+import sys
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-here'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# Configure file logging
+LOG_FILE = 'logging.txt'
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, mode='a', encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Custom print function to log to file
+original_print = print
+def print(*args, **kwargs):
+    """Custom print function that logs to file and console"""
+    message = ' '.join(str(arg) for arg in args)
+    logger.info(message)
+    original_print(*args, **kwargs)
 
 # --- IST Time Helper Function ---
 def get_ist_now():
@@ -1675,11 +1696,11 @@ def execute_manual_sell_auto_position(strike, option_type, symbol='NIFTY'):
 def execute_auto_buy(position):
     """Execute auto buy for both Paper Trading and Live Trading modes"""
     
-    # 🚨 EMERGENCY CIRCUIT BREAKER - Step 1: Check if circuit breaker is enabled
+    # EMERGENCY CIRCUIT BREAKER - Step 1: Check if circuit breaker is enabled
     circuit_breaker_enabled = app_state['auto_trading_config'].get('circuit_breaker_enabled', True)
     
     if circuit_breaker_enabled:
-        # 🛡️ STEP 1: POSITION SYNC - Verify position exists in Zerodha (Live Trading only)
+        # STEP 1: POSITION SYNC - Verify position exists in Zerodha (Live Trading only)
         if not app_state.get('paper_trading_enabled', True) and app_state['auto_trading_config'].get('position_sync_enabled', True):
             print(f"[CIRCUIT BREAKER] 🔍 Syncing with Zerodha before auto-buy...")
             zerodha_positions = sync_positions_with_zerodha()
@@ -2878,16 +2899,140 @@ def check_market_close_and_exit_positions():
         print(f"❌ Market Close Check Error: {e}")
         return False
 
+def sync_and_remove_manually_closed_positions():
+    """
+    🔄 POSITION SYNC: Check if positions were manually closed in Zerodha app
+    If a position is closed in Zerodha app, remove it from webapp and stop auto trading
+    This prevents infinite sell rejection loops
+    """
+    if app_state.get('paper_trading_enabled', True):
+        # Skip sync for paper trading mode
+        return
+    
+    if not app_state.get('zerodha_connected') or not app_state.get('kite'):
+        return
+    
+    try:
+        # Fetch current Zerodha positions
+        positions_data = app_state['kite'].positions()
+        zerodha_positions = positions_data.get('net', [])
+        
+        # Build a set of all active tradingsymbols in Zerodha
+        active_zerodha_symbols = set()
+        for z_pos in zerodha_positions:
+            qty = z_pos.get('quantity', 0)
+            if qty != 0:  # Only active positions
+                symbol = z_pos.get('tradingsymbol', '')
+                active_zerodha_symbols.add(symbol)
+        
+        print(f"[POSITION SYNC] Active Zerodha positions: {len(active_zerodha_symbols)}")
+        
+        # Check all webapp positions
+        positions_to_check = []
+        
+        # Check manual positions
+        for pos in app_state.get('positions', []):
+            positions_to_check.append(('manual', pos))
+        
+        # Check auto positions
+        for pos in app_state.get('auto_positions', []):
+            positions_to_check.append(('auto', pos))
+        
+        removed_count = 0
+        for pos_type, position in positions_to_check:
+            try:
+                # Build tradingsymbol for this position
+                symbol = position.get('symbol', 'NIFTY')
+                strike = position.get('strike', 0)
+                option_type = position.get('option_type', position.get('type', ''))
+                expiry = position.get('expiry', '')
+                
+                if not strike or not option_type or not expiry:
+                    continue
+                
+                # Convert expiry to YYMMDD format for TrueData
+                if '-' in expiry:
+                    expiry_parts = expiry.split('-')
+                    if len(expiry_parts) == 3:
+                        yymmdd = expiry_parts[0][2:] + expiry_parts[1] + expiry_parts[2]
+                    else:
+                        continue
+                else:
+                    yymmdd = expiry
+                
+                # Build TrueData symbol and convert to Zerodha tradingsymbol
+                td_symbol = f"{symbol}{yymmdd}{int(strike)}{option_type}"
+                tradingsymbol, instrument_token, error = truedata_to_zerodha_symbol(td_symbol)
+                
+                if not tradingsymbol:
+                    continue
+                
+                # Check if position exists in Zerodha
+                if tradingsymbol not in active_zerodha_symbols:
+                    print(f"[POSITION SYNC] ⚠️ Position NOT found in Zerodha: {tradingsymbol}")
+                    print(f"[POSITION SYNC] 🗑️ User manually closed this in Zerodha app - Removing from webapp")
+                    
+                    # Remove from appropriate list
+                    if pos_type == 'manual':
+                        if position in app_state['positions']:
+                            app_state['positions'].remove(position)
+                            print(f"[POSITION SYNC] ✅ Removed from manual positions: {strike} {option_type}")
+                            removed_count += 1
+                    elif pos_type == 'auto':
+                        if position in app_state['auto_positions']:
+                            app_state['auto_positions'].remove(position)
+                            print(f"[POSITION SYNC] ✅ Removed from auto positions: {strike} {option_type}")
+                            removed_count += 1
+                            
+                            # Also add to trade history
+                            app_state['trade_history'].append({
+                                'timestamp': get_ist_timestamp(),
+                                'action': 'Position Removed (Manually Closed in Zerodha App)',
+                                'strike': strike,
+                                'type': option_type,
+                                'quantity': position.get('quantity', 0),
+                                'lots': position.get('lots', 1),
+                                'sell_price': 0,
+                                'buy_price': position.get('buy_price', 0),
+                                'pnl': 0,
+                                'reason': 'Position manually closed in Zerodha app - preventing auto trading loop'
+                            })
+                    
+            except Exception as e:
+                print(f"[POSITION SYNC] Error checking position: {e}")
+                continue
+        
+        if removed_count > 0:
+            print(f"[POSITION SYNC] 🧹 Cleaned up {removed_count} manually closed positions")
+            # Emit update to frontend
+            try:
+                socketio.emit('position_update', {
+                    'positions': app_state.get('positions', []),
+                    'auto_positions': app_state.get('auto_positions', [])
+                })
+            except:
+                pass
+                
+    except Exception as e:
+        print(f"[POSITION SYNC] ❌ Error syncing positions: {e}")
+
 def auto_trading_background_task():
     """Background task for auto trading and market close monitoring"""
     print("🤖 Auto trading background task started")
     last_market_close_check = 0
+    last_position_sync = 0
     market_closed_today = False
     
     while True:
         try:
-            # 🕐 Check for market close every 60 seconds (only after 3:00 PM)
             current_time = time.time()
+            
+            # � Position sync every 30 seconds (check if positions were closed in Zerodha app)
+            if current_time - last_position_sync >= 10:  # Check every 10 seconds - fast but safe
+                last_position_sync = current_time
+                sync_and_remove_manually_closed_positions()
+            
+            # 🕐 Check for market close every 60 seconds (only after 3:00 PM)
             if current_time - last_market_close_check >= 60:  # Check every minute
                 last_market_close_check = current_time
                 
@@ -4324,15 +4469,6 @@ def api_option_chain_data():
         if df_chain.empty:
             return jsonify({'success': False, 'message': 'No data available'})
         
-        # Debug: RAW data from TrueData before any processing
-        print(f"DEBUG RAW CHAIN FROM TRUEDATA:")
-        print(f"Columns: {df_chain.columns.tolist()}")
-        print(f"Shape: {df_chain.shape}")
-        print(f"Sample raw data:\n{df_chain[['ltp', 'bid', 'ask']].head(5)}")
-        print(f"RAW LTP values: {df_chain['ltp'].unique()[:10]}")
-        print(f"RAW BID values: {df_chain['bid'].unique()[:10]}")
-        print(f"RAW ASK values: {df_chain['ask'].unique()[:10]}")
-        
         # Fix LTP bug: If most LTP values are the underlying price, calculate from bid-ask
         unique_ltp_values = df_chain['ltp'].unique()
         underlying_price = 24868.6  # Current NIFTY price
@@ -4370,17 +4506,6 @@ def api_option_chain_data():
         else:
             print(f"✅ LTP OK: Only {options_with_underlying_ltp}/{total_options} options have underlying price")
         
-        print(f"Option chain columns: {df_chain.columns.tolist()}")
-        print(f"Option chain shape: {df_chain.shape}")
-        print(f"Sample data:\n{df_chain.head(2)}")
-        
-        # Debug: Check actual LTP, bid, ask values
-        print(f"DEBUG LTP values: {df_chain['ltp'].unique()[:5]}")
-        if 'bid' in df_chain.columns:
-            print(f"DEBUG BID values: {df_chain['bid'].unique()[:5]}")
-        if 'ask' in df_chain.columns:
-            print(f"DEBUG ASK values: {df_chain['ask'].unique()[:5]}")
-        
         # Map TrueData column names to standard names
         column_mapping = {
             'ltp': 'ltp',
@@ -4416,13 +4541,7 @@ def api_option_chain_data():
         
         df_chain['strike'] = pd.to_numeric(df_chain['strike'], errors='coerce')
         
-        # Debug: Check LTP before fillna
-        print(f"DEBUG LTP BEFORE fillna: {df_chain['ltp'].head()}")
-        
         df_chain = df_chain.infer_objects(copy=False).fillna(0)
-        
-        # Debug: Check LTP after fillna
-        print(f"DEBUG LTP AFTER fillna: {df_chain['ltp'].head()}")
         
         # Get underlying value
         underlying = None
