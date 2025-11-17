@@ -5714,34 +5714,53 @@ def api_positions():
                 if not auto_pos_found and int(pos['quantity']) > 0:
                     print(f"🆕 LIVE: Creating auto position for existing Zerodha position {strike} {option_type}")
                     try:
-                        # Get expiry from tradingsymbol (e.g., "NIFTY25OCT25900CE" -> extract date)
-                        # Note: re and datetime are already imported at the top of the file
+                        # 🔥 FIX: Get actual expiry from instruments_df instead of parsing from tradingsymbol
+                        # Zerodha format: BANKNIFTY25NOV58800CE has NO day in symbol!
+                        # We need to fetch the actual expiry date from instruments
                         
-                        symbol_match = re.match(r'^([A-Z]+)(\d{2})([A-Z]{3})(\d+)(CE|PE)$', pos['tradingsymbol'])
-                        if symbol_match:
-                            base_symbol = symbol_match.group(1)
-                            yy = symbol_match.group(2)
-                            month_str = symbol_match.group(3)
+                        expiry_date = None
+                        
+                        # Try to get expiry from instruments_df
+                        if instruments_df is not None:
+                            matching_instrument = instruments_df[
+                                (instruments_df['tradingsymbol'] == pos['tradingsymbol']) &
+                                (instruments_df['exchange'] == 'NFO')
+                            ]
                             
-                            # Convert month string to number
-                            month_map = {'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
-                                       'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12}
-                            month = month_map.get(month_str, 1)
-                            day = int(symbol_match.group(4)[:2])  # First 2 digits of strike might be day
-                            year = 2000 + int(yy)
-                            
-                            expiry_date = f"{year}-{month:02d}-{day:02d}"
-                            
-                            # Create auto position
-                            auto_pos = create_auto_position(
-                                strike=strike,
-                                option_type=option_type,
-                                buy_price=avg_price,
-                                qty=int(pos['quantity']),
-                                symbol=base_symbol,
-                                expiry=expiry_date
-                            )
-                            print(f"✅ LIVE: Auto position created for {strike} {option_type} with SL ₹{stop_loss_val:.2f}")
+                            if not matching_instrument.empty:
+                                # Get expiry date from instruments
+                                instrument_expiry = matching_instrument.iloc[0]['expiry']
+                                if pd.notna(instrument_expiry):
+                                    # Convert to string format YYYY-MM-DD
+                                    if hasattr(instrument_expiry, 'strftime'):
+                                        expiry_date = instrument_expiry.strftime('%Y-%m-%d')
+                                    else:
+                                        expiry_date = str(instrument_expiry)[:10]  # Take YYYY-MM-DD part
+                                    
+                                    print(f"✅ EXPIRY FETCHED: {pos['tradingsymbol']} -> {expiry_date}")
+                        
+                        # Fallback: Extract symbol from tradingsymbol for manual parsing
+                        if not expiry_date:
+                            symbol_match = re.match(r'^([A-Z]+)', pos['tradingsymbol'])
+                            base_symbol = symbol_match.group(1) if symbol_match else 'UNKNOWN'
+                            expiry_date = ''  # Empty expiry if we can't determine it
+                            print(f"⚠️ EXPIRY FETCH FAILED: Using empty expiry for {pos['tradingsymbol']}")
+                        else:
+                            # Extract base symbol
+                            symbol_match = re.match(r'^([A-Z]+)', pos['tradingsymbol'])
+                            base_symbol = symbol_match.group(1) if symbol_match else 'UNKNOWN'
+                        
+                        # Create auto position with correct expiry
+                        auto_pos = create_auto_position(
+                            strike=strike,
+                            option_type=option_type,
+                            buy_price=avg_price,
+                            qty=int(pos['quantity']),
+                            symbol=base_symbol,
+                            expiry=expiry_date
+                        )
+                        print(f"✅ LIVE: Auto position created for {strike} {option_type} with SL ₹{stop_loss_val:.2f}")
+                        print(f"   Symbol: {base_symbol}, Expiry: {expiry_date}, Strike: {strike}")
                     except Exception as e:
                         print(f"⚠️ LIVE: Could not create auto position: {e}")
             
