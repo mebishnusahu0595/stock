@@ -1346,7 +1346,12 @@ def execute_auto_sell(position, reason='Stop Loss'):
     
     # Build TrueData symbol and convert to Zerodha
     td_symbol = f"{symbol}{expiry_td}{int(strike)}{option_type}"
-    tradingsymbol = td_to_zerodha_symbol(td_symbol)
+    
+    # 🔥 FIX: Use get_zerodha_symbol FIRST (more reliable)
+    tradingsymbol, token, error = get_zerodha_symbol(td_symbol)
+    if not tradingsymbol:
+        # Fallback to td_to_zerodha_symbol
+        tradingsymbol = td_to_zerodha_symbol(td_symbol)
     
     if not tradingsymbol:
         print(f"[ZERODHA VERIFICATION] Failed to convert symbol: {td_symbol}")
@@ -1410,9 +1415,33 @@ def execute_auto_sell(position, reason='Stop Loss'):
             position['quantity'] = zerodha_qty
         
     except Exception as e:
-        print(f"[ZERODHA VERIFICATION] Failed to verify position: {e}")
-        print(f"[ZERODHA VERIFICATION] Proceeding with auto-sell attempt (assuming temporary API error)")
-        # Don't block auto-sell on verification error - might be temporary API issue
+        print(f"[ZERODHA VERIFICATION] ❌ CRITICAL: Failed to verify position: {e}")
+        print(f"[ZERODHA VERIFICATION] 🚫 BLOCKING AUTO-SELL: Cannot verify position exists in Zerodha")
+        print(f"[ZERODHA VERIFICATION] This prevents selling positions that may not exist")
+        
+        # 🚨 CRITICAL: Block auto-sell if verification fails
+        position['sell_in_progress'] = False
+        position['zerodha_verification_error'] = str(e)
+        
+        # Record in trade history
+        app_state['trade_history'].append({
+            'action': 'Auto-Sell Blocked - Zerodha Verification Failed',
+            'type': option_type,
+            'strike': strike,
+            'qty': 0,
+            'price': sell_price,
+            'pnl': 0,
+            'position_id': position.get('id', 'unknown'),
+            'order_status': f'BLOCKED: Verification error - {str(e)}',
+            'time': dt.now().strftime('%Y-%m-%d %H:%M:%S')
+        })
+        
+        return False  # 🚨 BLOCK auto-sell if we can't verify position
+    
+    # ✅ VERIFICATION PASSED - Position exists in Zerodha, proceed with auto-sell
+    print(f"[ZERODHA VERIFICATION] ✅✅✅ VERIFICATION PASSED - Position active in Zerodha")
+    print(f"[ZERODHA VERIFICATION] Tradingsymbol: {tradingsymbol}, Quantity: {zerodha_qty}")
+    print(f"[ZERODHA VERIFICATION] Proceeding with auto-sell execution...")
     
     qty = position.get('qty', position.get('quantity', 0))
     pnl = (sell_price - position['buy_price']) * qty
@@ -1479,12 +1508,14 @@ def execute_auto_sell(position, reason='Stop Loss'):
         print(f"[DEBUG] AUTO SELL - Built TrueData symbol: {td_symbol}")
         print(f"[DEBUG] AUTO SELL - Expiry details: original={expiry}, parsed_td={expiry_td}")
         
-        # Try conversion using the new unified method
-        tradingsymbol = td_to_zerodha_symbol(td_symbol)
+        # 🔥 FIX: Use get_zerodha_symbol FIRST (more reliable) instead of td_to_zerodha_symbol
+        print(f"[DEBUG] AUTO SELL - Converting using get_zerodha_symbol (primary method)...")
+        tradingsymbol, token, error = get_zerodha_symbol(td_symbol)
+        
         if not tradingsymbol:
-            # If td_to_zerodha_symbol fails, try get_zerodha_symbol directly
-            print(f"[DEBUG] AUTO SELL - td_to_zerodha_symbol failed, trying get_zerodha_symbol...")
-            tradingsymbol, token, error = get_zerodha_symbol(td_symbol)
+            # Fallback to td_to_zerodha_symbol if get_zerodha_symbol fails
+            print(f"[DEBUG] AUTO SELL - get_zerodha_symbol failed, trying td_to_zerodha_symbol as fallback...")
+            tradingsymbol = td_to_zerodha_symbol(td_symbol)
             
             if not tradingsymbol:
                 print(f"[ERROR] AUTO SELL - Both conversion methods failed for: {td_symbol}")
@@ -1731,7 +1762,12 @@ def execute_auto_buy(position):
             
             # Build TrueData symbol and convert to Zerodha
             td_symbol = f"{symbol}{expiry_td}{int(strike)}{option_type}"
-            tradingsymbol = td_to_zerodha_symbol(td_symbol)
+            
+            # 🔥 FIX: Use get_zerodha_symbol FIRST (more reliable)
+            tradingsymbol, token, error = get_zerodha_symbol(td_symbol)
+            if not tradingsymbol:
+                # Fallback to td_to_zerodha_symbol
+                tradingsymbol = td_to_zerodha_symbol(td_symbol)
             
             if tradingsymbol:
                 # Check if position exists in Zerodha
@@ -2108,12 +2144,14 @@ def execute_auto_buy(position):
             print(f"[DEBUG] AUTO BUY - Built TrueData symbol: {td_symbol}")
             print(f"[DEBUG] AUTO BUY - Expiry details: original={expiry}, parsed_td={expiry_td}")
             
-            # Try conversion using the new unified method
-            tradingsymbol = td_to_zerodha_symbol(td_symbol)
+            # 🔥 FIX: Use get_zerodha_symbol FIRST (more reliable) instead of td_to_zerodha_symbol
+            print(f"[DEBUG] AUTO BUY - Converting using get_zerodha_symbol (primary method)...")
+            tradingsymbol, token, error = get_zerodha_symbol(td_symbol)
+            
             if not tradingsymbol:
-                # If td_to_zerodha_symbol fails, try get_zerodha_symbol directly
-                print(f"[DEBUG] AUTO BUY - td_to_zerodha_symbol failed, trying get_zerodha_symbol...")
-                tradingsymbol, token, error = get_zerodha_symbol(td_symbol)
+                # Fallback to td_to_zerodha_symbol if get_zerodha_symbol fails
+                print(f"[DEBUG] AUTO BUY - get_zerodha_symbol failed, trying td_to_zerodha_symbol as fallback...")
+                tradingsymbol = td_to_zerodha_symbol(td_symbol)
                 
                 if not tradingsymbol:
                     print(f"[ERROR] AUTO BUY - Both conversion methods failed for: {td_symbol}")
@@ -2962,7 +3000,7 @@ def sync_and_remove_manually_closed_positions():
                 
                 # Build TrueData symbol and convert to Zerodha tradingsymbol
                 td_symbol = f"{symbol}{yymmdd}{int(strike)}{option_type}"
-                tradingsymbol, instrument_token, error = truedata_to_zerodha_symbol(td_symbol)
+                tradingsymbol, instrument_token, error = get_zerodha_symbol(td_symbol)
                 
                 if not tradingsymbol:
                     continue
@@ -4357,7 +4395,7 @@ def api_expiry_list(symbol):
     expiry_url = f"https://history.truedata.in/getSymbolExpiryList?symbol={symbol}&response=csv"
     headers = {
         "accept": "application/json",
-        "authorization": "Bearer q9iy3m4GLWPDd-f4q1sBC6ccljnfJvcHDw2M-Y7eWzJGd48NpjfdlS-9mbfPHk1__XD1vi9DOEq0OSycCIDWxB3jSluSGBHzFcjw7QARVirUEgIizi6UfrjFUROdBecMsehgkK-YHprUSrqKfkAA8aXJWGxo3PAnfhckPCFEOeOkcoJV1longifm3y_df4aUgajq-qD78_WPxqMK_WO1xm6pncq2hKHLvkEuaLrQZtp3WjPD39EH8-7j8QT4bwOUqMRFK35pelTI3peHo1OqdA"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
+        "authorization": "Bearer ump5ksCOXfao5QuWAJqFnFSCGBxVq4YjZrEGiWC2dXfjadn2U2lF4hCfys40LnT-rMI0E-IRD1pZO-hRTvHMFV6OBitR0kBdBKG3h5VEO8-wpLweQu5kWLYyxTidEkYXVxyxr3VjMftQ6LuH5aBP1iXT1ydMKm6rH4BqGzuMcgn3VsB2yKv-wKJIgFlvGa2FhI7lwbOKKvJnwyxtxXJPkpv5bWvfl1dF1fljV0UUwyyK2BsN4BJ-WA7WmAraOYhKZaHknTKwe-z1RrUkpYyZCQ"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
     }
     
     try:
@@ -5587,9 +5625,14 @@ def api_positions():
         current_option_data = app_state.get('current_option_data', {})
         print(f"[DEBUG] Live Trading - Option chain data available: {bool(current_option_data)}")
         
-        # Show all positions, not just those with quantity > 0
+        # 🔥 FILTER OUT CLOSED POSITIONS (qty=0) to prevent negative SL display
         all_positions = []
         for pos in net_positions:
+            # Skip positions with quantity = 0 (already sold/closed)
+            if int(pos['quantity']) == 0:
+                print(f"[DEBUG] Skipping closed position: {pos['tradingsymbol']} qty=0")
+                continue
+                
             print(f"[DEBUG] Checking position: {pos['tradingsymbol']} qty={pos['quantity']}")
             
             # Try to extract strike and option_type from tradingsymbol if not present
@@ -7316,7 +7359,7 @@ def api_auto_start_option_chain():
         expiry_url = f"https://history.truedata.in/getSymbolExpiryList?symbol={symbol}&response=csv"
         headers = {
             "accept": "application/json",
-            "authorization": "Bearer q9iy3m4GLWPDd-f4q1sBC6ccljnfJvcHDw2M-Y7eWzJGd48NpjfdlS-9mbfPHk1__XD1vi9DOEq0OSycCIDWxB3jSluSGBHzFcjw7QARVirUEgIizi6UfrjFUROdBecMsehgkK-YHprUSrqKfkAA8aXJWGxo3PAnfhckPCFEOeOkcoJV1longifm3y_df4aUgajq-qD78_WPxqMK_WO1xm6pncq2hKHLvkEuaLrQZtp3WjPD39EH8-7j8QT4bwOUqMRFK35pelTI3peHo1OqdA"  # REPLACE THIS WITH YOUR REAL TOKEN
+            "authorization": "Bearer ump5ksCOXfao5QuWAJqFnFSCGBxVq4YjZrEGiWC2dXfjadn2U2lF4hCfys40LnT-rMI0E-IRD1pZO-hRTvHMFV6OBitR0kBdBKG3h5VEO8-wpLweQu5kWLYyxTidEkYXVxyxr3VjMftQ6LuH5aBP1iXT1ydMKm6rH4BqGzuMcgn3VsB2yKv-wKJIgFlvGa2FhI7lwbOKKvJnwyxtxXJPkpv5bWvfl1dF1fljV0UUwyyK2BsN4BJ-WA7WmAraOYhKZaHknTKwe-z1RrUkpYyZCQ"  # REPLACE THIS WITH YOUR REAL TOKEN
         }
         
         response = requests.get(expiry_url, headers=headers)
