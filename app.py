@@ -1259,11 +1259,12 @@ def execute_auto_sell(position, reason='Stop Loss'):
             
             if sell_price < buy_price:
                 # 📉 LOSS STOP LOSS: Auto setup for re-entry (recovery mode)
-                position['last_stop_loss_price'] = sell_price  # Auto buy at same sell price
+                # 🔄 Auto-buy when price recovers BACK to original entry price
+                position['last_stop_loss_price'] = buy_price  # Re-enter at original buy price
                 position['waiting_for_autobuy'] = True
                 position['mode'] = f'Auto-Sell (Waiting for Auto-Buy at ₹{position["last_stop_loss_price"]})'
                 print(f"📉 LOSS STOP LOSS: Buy ₹{buy_price} → Sell ₹{sell_price} (Loss: ₹{buy_price - sell_price:.2f})")
-                print(f"🎯 AUTO BUY SETUP: Will trigger when price reaches ₹{position['last_stop_loss_price']} (recovery mode)")
+                print(f"🎯 AUTO BUY SETUP: Will trigger when price recovers to ₹{position['last_stop_loss_price']} (original entry)")
                 
             else:
                 # ✅ PROFIT/BREAK-EVEN STOP LOSS: COMPLETE EXIT (No Auto-Buy)
@@ -1292,6 +1293,7 @@ def execute_auto_sell(position, reason='Stop Loss'):
             position['pnl'] = 0.0  # Reset current P&L to zero
             position['pnl_percentage'] = 0.0  # Reset P&L percentage
             position['quantity'] = 0  # Set quantity to 0 to show position is sold
+            position['qty'] = 0  # CRITICAL: Also set qty to 0 for auto-buy check
             position['current_price'] = sell_price  # Keep current price for reference
 
             print(f"📊 Position waiting: Strike {position['strike']} {option_type} | Quantity: {position['original_quantity']}")
@@ -1590,11 +1592,12 @@ def execute_auto_sell(position, reason='Stop Loss'):
         
         if sell_price < buy_price:
             # 📉 LOSS STOP LOSS in LIVE TRADING: Auto setup for re-entry (recovery mode)
-            position['last_stop_loss_price'] = sell_price  # Auto buy at same sell price
+            # 🔄 Auto-buy when price recovers BACK to original entry price
+            position['last_stop_loss_price'] = buy_price  # Re-enter at original buy price
             position['waiting_for_autobuy'] = True
-            position['mode'] = f'Live Auto-Sell (Waiting for Auto-Buy at ₹{sell_price})'
+            position['mode'] = f'Live Auto-Sell (Waiting for Auto-Buy at ₹{buy_price})'
             print(f"📉 LIVE LOSS STOP LOSS: Buy ₹{buy_price} → Sell ₹{sell_price} (Loss: ₹{buy_price - sell_price:.2f})")
-            print(f"🎯 LIVE AUTO BUY SETUP: Will trigger when price reaches ₹{position['last_stop_loss_price']} (recovery mode)")
+            print(f"🎯 LIVE AUTO BUY SETUP: Will trigger when price recovers to ₹{position['last_stop_loss_price']} (original entry)")
             
         else:
             # ✅ PROFIT/BREAK-EVEN STOP LOSS in LIVE TRADING: COMPLETE EXIT
@@ -1937,19 +1940,15 @@ def execute_auto_buy(position):
             
         position['highest_price'] = buy_price  # Reset highest price for new auto buy
         
-        # 🚨 CRITICAL FIX: For Phase 1, maintain original manual buy stop loss
-        # Auto buy at manual price, but stop loss stays at manual_buy_price - 10
-        if position.get('algorithm_phase', 1) == 1:
-            manual_buy_price = position.get('manual_buy_price', buy_price)
-            position['stop_loss_price'] = manual_buy_price - 10  # Original manual SL level
-            print(f"🎯 PHASE 1: Auto bought at ₹{buy_price}, Stop Loss remains at original ₹{position['stop_loss_price']} (manual ₹{manual_buy_price} - 10)")
-        else:
-            # Phase 2&3: Normal auto buy stop loss
-            volatility_buffer = 15 if position.get('auto_buy_count', 0) > 0 else 10
-            position['stop_loss_price'] = buy_price - volatility_buffer
-            
+        # 🚨 CRITICAL FIX: Reset stop loss after auto-buy
+        # After auto-buy at ₹100, SL should be ₹90 (buy_price - 10)
+        position['stop_loss_price'] = buy_price - 10  # Reset SL to new buy price - 10
         position['original_buy_price'] = buy_price  # Update original buy price for new cycle
-        position['minimum_stop_loss'] = position['stop_loss_price']  # Update minimum stop loss
+        position['manual_buy_price'] = buy_price  # 🔥 UPDATE: Reset entry reference for advanced algo
+        position['minimum_stop_loss'] = buy_price - 10  # Update minimum stop loss
+        position['advanced_stop_loss'] = buy_price - 10  # Reset advanced algo SL
+        
+        print(f"🎯 AUTO BUY COMPLETE: Bought at ₹{buy_price}, Stop Loss reset to ₹{position['stop_loss_price']} (Buy - 10)")
         position['auto_buy_count'] = position.get('auto_buy_count', 0) + 1
         position['quantity'] = quantity  # Restore quantity after auto buy
         position['total_cost'] = total_cost
@@ -2211,10 +2210,15 @@ def execute_auto_buy(position):
         position['buy_price'] = buy_price
         position['highest_price'] = buy_price
         
-        # 🚨 FIX: Auto buy stop loss = auto buy price - 10 (NOT same as sell price)
-        position['stop_loss_price'] = buy_price - 10  # Correct: auto buy price - 10
+        # 🚨 CRITICAL FIX: Reset stop loss after auto-buy
+        # After auto-buy at ₹100, SL should be ₹90 (buy_price - 10)
+        position['stop_loss_price'] = buy_price - 10  # Reset SL to new buy price - 10
         position['original_buy_price'] = buy_price  # Update original buy price for new cycle
+        position['manual_buy_price'] = buy_price  # 🔥 UPDATE: Reset entry reference for advanced algo
         position['minimum_stop_loss'] = buy_price - 10  # Update minimum stop loss
+        position['advanced_stop_loss'] = buy_price - 10  # Reset advanced algo SL
+        
+        print(f"🎯 LIVE AUTO BUY COMPLETE: Bought at ₹{buy_price}, Stop Loss reset to ₹{position['stop_loss_price']} (Buy - 10)")
         position['auto_bought'] = True
         position['mode'] = 'Running'
         position['waiting_for_autobuy'] = False
@@ -4395,7 +4399,7 @@ def api_expiry_list(symbol):
     expiry_url = f"https://history.truedata.in/getSymbolExpiryList?symbol={symbol}&response=csv"
     headers = {
         "accept": "application/json",
-        "authorization": "Bearer ump5ksCOXfao5QuWAJqFnFSCGBxVq4YjZrEGiWC2dXfjadn2U2lF4hCfys40LnT-rMI0E-IRD1pZO-hRTvHMFV6OBitR0kBdBKG3h5VEO8-wpLweQu5kWLYyxTidEkYXVxyxr3VjMftQ6LuH5aBP1iXT1ydMKm6rH4BqGzuMcgn3VsB2yKv-wKJIgFlvGa2FhI7lwbOKKvJnwyxtxXJPkpv5bWvfl1dF1fljV0UUwyyK2BsN4BJ-WA7WmAraOYhKZaHknTKwe-z1RrUkpYyZCQ"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
+        "authorization": "Bearer iHan4CKT9XclyKtjU2Cuk1rN9ymGxoIG3KJd5AkgcauPEOQUiY0EI571RlyTn6nEikiNU-AG3g-ZsRmpxjer2Z4hRQ_QU7TkVClvBrq3HxmNYsnzVc_xvnqRONvUNvdF3N-HRLrLn9-TNeXTJAZpZ2wSrPj4O2IQ6ZKvbqUTSOOifW9_dI3tFbdU51ZUm4GcjRtUa21ynTElmm1Ju0coemJsdqzbRTK1-3WCaHYkRE1SZhLuv7C008P4PAGCangZK9vQS74BgjWRMiO1BEG1NA"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
     }
     
     try:
@@ -5714,53 +5718,34 @@ def api_positions():
                 if not auto_pos_found and int(pos['quantity']) > 0:
                     print(f"🆕 LIVE: Creating auto position for existing Zerodha position {strike} {option_type}")
                     try:
-                        # 🔥 FIX: Get actual expiry from instruments_df instead of parsing from tradingsymbol
-                        # Zerodha format: BANKNIFTY25NOV58800CE has NO day in symbol!
-                        # We need to fetch the actual expiry date from instruments
+                        # Get expiry from tradingsymbol (e.g., "NIFTY25OCT25900CE" -> extract date)
+                        # Note: re and datetime are already imported at the top of the file
                         
-                        expiry_date = None
-                        
-                        # Try to get expiry from instruments_df
-                        if instruments_df is not None:
-                            matching_instrument = instruments_df[
-                                (instruments_df['tradingsymbol'] == pos['tradingsymbol']) &
-                                (instruments_df['exchange'] == 'NFO')
-                            ]
+                        symbol_match = re.match(r'^([A-Z]+)(\d{2})([A-Z]{3})(\d+)(CE|PE)$', pos['tradingsymbol'])
+                        if symbol_match:
+                            base_symbol = symbol_match.group(1)
+                            yy = symbol_match.group(2)
+                            month_str = symbol_match.group(3)
                             
-                            if not matching_instrument.empty:
-                                # Get expiry date from instruments
-                                instrument_expiry = matching_instrument.iloc[0]['expiry']
-                                if pd.notna(instrument_expiry):
-                                    # Convert to string format YYYY-MM-DD
-                                    if hasattr(instrument_expiry, 'strftime'):
-                                        expiry_date = instrument_expiry.strftime('%Y-%m-%d')
-                                    else:
-                                        expiry_date = str(instrument_expiry)[:10]  # Take YYYY-MM-DD part
-                                    
-                                    print(f"✅ EXPIRY FETCHED: {pos['tradingsymbol']} -> {expiry_date}")
-                        
-                        # Fallback: Extract symbol from tradingsymbol for manual parsing
-                        if not expiry_date:
-                            symbol_match = re.match(r'^([A-Z]+)', pos['tradingsymbol'])
-                            base_symbol = symbol_match.group(1) if symbol_match else 'UNKNOWN'
-                            expiry_date = ''  # Empty expiry if we can't determine it
-                            print(f"⚠️ EXPIRY FETCH FAILED: Using empty expiry for {pos['tradingsymbol']}")
-                        else:
-                            # Extract base symbol
-                            symbol_match = re.match(r'^([A-Z]+)', pos['tradingsymbol'])
-                            base_symbol = symbol_match.group(1) if symbol_match else 'UNKNOWN'
-                        
-                        # Create auto position with correct expiry
-                        auto_pos = create_auto_position(
-                            strike=strike,
-                            option_type=option_type,
-                            buy_price=avg_price,
-                            qty=int(pos['quantity']),
-                            symbol=base_symbol,
-                            expiry=expiry_date
-                        )
-                        print(f"✅ LIVE: Auto position created for {strike} {option_type} with SL ₹{stop_loss_val:.2f}")
-                        print(f"   Symbol: {base_symbol}, Expiry: {expiry_date}, Strike: {strike}")
+                            # Convert month string to number
+                            month_map = {'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+                                       'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12}
+                            month = month_map.get(month_str, 1)
+                            day = int(symbol_match.group(4)[:2])  # First 2 digits of strike might be day
+                            year = 2000 + int(yy)
+                            
+                            expiry_date = f"{year}-{month:02d}-{day:02d}"
+                            
+                            # Create auto position
+                            auto_pos = create_auto_position(
+                                strike=strike,
+                                option_type=option_type,
+                                buy_price=avg_price,
+                                qty=int(pos['quantity']),
+                                symbol=base_symbol,
+                                expiry=expiry_date
+                            )
+                            print(f"✅ LIVE: Auto position created for {strike} {option_type} with SL ₹{stop_loss_val:.2f}")
                     except Exception as e:
                         print(f"⚠️ LIVE: Could not create auto position: {e}")
             
@@ -7378,7 +7363,7 @@ def api_auto_start_option_chain():
         expiry_url = f"https://history.truedata.in/getSymbolExpiryList?symbol={symbol}&response=csv"
         headers = {
             "accept": "application/json",
-            "authorization": "Bearer ump5ksCOXfao5QuWAJqFnFSCGBxVq4YjZrEGiWC2dXfjadn2U2lF4hCfys40LnT-rMI0E-IRD1pZO-hRTvHMFV6OBitR0kBdBKG3h5VEO8-wpLweQu5kWLYyxTidEkYXVxyxr3VjMftQ6LuH5aBP1iXT1ydMKm6rH4BqGzuMcgn3VsB2yKv-wKJIgFlvGa2FhI7lwbOKKvJnwyxtxXJPkpv5bWvfl1dF1fljV0UUwyyK2BsN4BJ-WA7WmAraOYhKZaHknTKwe-z1RrUkpYyZCQ"  # REPLACE THIS WITH YOUR REAL TOKEN
+            "authorization": "Bearer iHan4CKT9XclyKtjU2Cuk1rN9ymGxoIG3KJd5AkgcauPEOQUiY0EI571RlyTn6nEikiNU-AG3g-ZsRmpxjer2Z4hRQ_QU7TkVClvBrq3HxmNYsnzVc_xvnqRONvUNvdF3N-HRLrLn9-TNeXTJAZpZ2wSrPj4O2IQ6ZKvbqUTSOOifW9_dI3tFbdU51ZUm4GcjRtUa21ynTElmm1Ju0coemJsdqzbRTK1-3WCaHYkRE1SZhLuv7C008P4PAGCangZK9vQS74BgjWRMiO1BEG1NA"  # REPLACE THIS WITH YOUR REAL TOKEN
         }
         
         response = requests.get(expiry_url, headers=headers)
