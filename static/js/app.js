@@ -1668,8 +1668,9 @@ function hasStructureChanged(oldPositions, newPositions) {
         }
         
         // Check if status changed (waiting_for_autobuy, sold, etc.)
-        if (oldPos.waiting_for_autobuy !== newPos.waiting_for_autobuy) {
-            console.log(`🔄 Structure changed: ${newKey} waiting_for_autobuy status changed`);
+        // Explicitly cast to boolean to avoid undefined vs false issues
+        if (!!oldPos.waiting_for_autobuy !== !!newPos.waiting_for_autobuy) {
+            console.log(`🔄 Structure changed: ${newKey} waiting status changed (Auto Buy Triggered)`);
             return true;
         }
         
@@ -1781,6 +1782,55 @@ function updateDynamicValues(positions) {
         
         if (!row) return; // Row doesn't exist, will be handled in next full rebuild
         
+        // --- Update Quantity (Crucial for Auto Buy transition) ---
+        const qtyCell = row.querySelector('.qty-cell');
+        if (qtyCell) {
+            // Determine correct quantity to display
+            const displayQty = pos.waiting_for_autobuy ? (pos.original_quantity || 0) : (pos.quantity !== undefined ? pos.quantity : pos.qty || '-');
+            
+            // Only update if changed
+            if (qtyCell.textContent != displayQty) {
+                console.log(`⚡ Fast Update: Quantity changed for ${positionKey} (${qtyCell.textContent} -> ${displayQty})`);
+                qtyCell.textContent = displayQty;
+                // Green flash effect for auto-buy visual feedback
+                qtyCell.style.backgroundColor = '#d4edda'; 
+                setTimeout(() => { qtyCell.style.backgroundColor = ''; }, 1000);
+            }
+        }
+
+        // ---  Update Product/Status Cell (Remove "PENDING" text) ---
+        const productCell = row.querySelector('.product-cell');
+        if (productCell) {
+            const newContent = pos.waiting_for_autobuy ? '<span style="color: #ff9800; font-weight: bold;">PENDING</span>' : (pos.product || pos.type || '-');
+            if (productCell.innerHTML !== newContent) {
+                productCell.innerHTML = newContent;
+            }
+        }
+
+        // --- Update Sell Button (Switch "Cancel" -> "Sell") ---
+        const sellCell = row.querySelector('.sell-cell');
+        if (sellCell) {
+             // Check if state changed from waiting to active (or vice versa)
+             // We store the state in a data attribute to check against new state
+             const wasWaiting = row.getAttribute('data-waiting') === 'true';
+             const isWaiting = !!pos.waiting_for_autobuy;
+
+             if (wasWaiting !== isWaiting) {
+                 console.log(`⚡ Fast Update: Switching buttons for ${positionKey}`);
+                 // Get symbol data needed for button generation
+                 const symbolData = getSymbolAndSellParams(pos);
+                 const newButtonHtml = getSellButtonHtml(pos, symbolData);
+                 
+                 sellCell.innerHTML = newButtonHtml;
+                 row.setAttribute('data-waiting', isWaiting);
+                 
+                 // Re-attach handlers for this specific row since we replaced innerHTML
+                 attachSellButtonHandlers(); 
+             }
+        }
+
+        
+
         // Update current price
         const currentPriceCell = row.querySelector('.current-price-cell');
         if (currentPriceCell) {
@@ -1859,7 +1909,6 @@ function updateDynamicValues(positions) {
                     // Initial load - set the value
                     currentInput.value = newStopLossValue.toFixed(2);
                 }
-                // If user changed recently, preserve their input
             } else if (!currentInput || newStopLossValue === 0) {
                 // No input exists or no stop loss - rebuild this cell
                 needsUpdate = true;
