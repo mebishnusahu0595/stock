@@ -1628,7 +1628,14 @@ function updatePositions(data) {
     // Only show positions with quantity > 0 OR positions waiting for auto-buy
     const filtered = positions.filter(pos => {
         const qty = pos.qty !== undefined ? pos.qty : pos.quantity;
-        return qty > 0 || pos.waiting_for_autobuy === true;
+        const shouldShow = qty > 0 || pos.waiting_for_autobuy === true;
+        
+        // 🔍 DEBUG: Log filtering decisions for sold positions
+        if (qty === 0 || qty === '0') {
+            console.log(`🔍 FILTER CHECK: ${pos.strike} ${pos.option_type} | qty=${qty} | waiting=${pos.waiting_for_autobuy} | shouldShow=${shouldShow} | status=${pos.status}`);
+        }
+        
+        return shouldShow;
     });
     
     // Check if we need to rebuild the entire table (structure changed)
