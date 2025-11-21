@@ -1,8 +1,6 @@
-
-
 from flask import Flask, render_template, request, jsonify, session, redirect
 from flask_socketio import SocketIO, emit
-from datetime import datetime as dt
+from datetime import datetime as dt, timedelta
 import datetime
 from truedata import TD_live
 from kiteconnect import KiteConnect
@@ -1115,16 +1113,24 @@ def sync_positions_with_zerodha():
         # Extract net positions (actual holdings)
         net_positions = positions.get('net', [])
         
-        # Build map of tradingsymbol -> quantity
+        # Build map of tradingsymbol -> quantity (including today's traded positions)
         zerodha_positions = {}
         for pos in net_positions:
             symbol = pos.get('tradingsymbol', '')
             qty = pos.get('quantity', 0)
-            if qty != 0:  # Only track non-zero positions
-                zerodha_positions[symbol] = qty
-                print(f"[SYNC] ✅ Zerodha position: {symbol} = {qty} qty")
+            day_buy_qty = pos.get('day_buy_quantity', 0)
+            day_sell_qty = pos.get('day_sell_quantity', 0)
+            
+            # 🚨 CRITICAL FIX: Include positions with day activity (buy or sell)
+            # This prevents circuit breaker from blocking auto-buy for today's sold positions
+            if qty != 0 or day_buy_qty > 0 or day_sell_qty > 0:
+                zerodha_positions[symbol] = qty  # Store actual qty (may be 0 if sold today)
+                if qty == 0 and (day_buy_qty > 0 or day_sell_qty > 0):
+                    print(f"[SYNC] ✅ Zerodha position (today's trade): {symbol} qty={qty} (day_buy={day_buy_qty}, day_sell={day_sell_qty})")
+                else:
+                    print(f"[SYNC] ✅ Zerodha position: {symbol} = {qty} qty")
         
-        print(f"[SYNC] Total Zerodha positions: {len(zerodha_positions)}")
+        print(f"[SYNC] Total Zerodha positions (including today's closed): {len(zerodha_positions)}")
         return zerodha_positions
         
     except Exception as e:
@@ -1280,7 +1286,15 @@ def execute_auto_sell(position, reason='Stop Loss'):
                 
                 position['mode'] = f'POSITION EXITED (P&L: ₹{profit_loss:.2f})'
                 position['waiting_for_autobuy'] = False  # No auto-buy on profit/break-even
+                position['sold'] = True  # Mark as sold
+                position['manual_sold'] = True  # Prevent any auto-buy attempts
                 print(f"✅ POSITION EXITED: {option_type} {position['strike']} closed - No auto-buy")
+                
+                # 🚨 CRITICAL: Remove from paper_positions to stop monitoring
+                if position in app_state['paper_positions']:
+                    app_state['paper_positions'].remove(position)
+                    print(f"🗑️ REMOVED FROM MONITORING: {option_type} {position['strike']} (profit/break-even exit)")
+
             
             # Common stop loss processing
             position['realized_pnl'] = pnl
@@ -1298,10 +1312,15 @@ def execute_auto_sell(position, reason='Stop Loss'):
 
             print(f"📊 Position waiting: Strike {position['strike']} {option_type} | Quantity: {position['original_quantity']}")
 
-            # 🚨 CRITICAL FIX: For stop loss sells, ensure position stays in paper_positions for monitoring
-            if position not in app_state['paper_positions']:
+            # 🚨 CRITICAL FIX: Only keep LOSS positions in monitoring for auto-buy
+            # DO NOT re-add profit/break-even positions that were already removed
+            is_exited = position.get('status') in ['EXITED_PROFITABLE', 'EXITED_BREAKEVEN']
+            
+            if not is_exited and position not in app_state['paper_positions']:
                 app_state['paper_positions'].append(position)
-                print(f"📋 POSITION KEPT IN MONITORING: {position['strike']} {option_type} will be monitored")
+                print(f"📋 POSITION KEPT IN MONITORING: {position['strike']} {option_type} will be monitored for auto-buy (LOSS)")
+            elif is_exited:
+                print(f"⛔ POSITION NOT RE-ADDED: {position['strike']} {option_type} was exited with profit/break-even")
         else:
             # For manual sell, completely remove the position
             position['sold'] = True
@@ -1595,9 +1614,12 @@ def execute_auto_sell(position, reason='Stop Loss'):
             # 🔄 Auto-buy when price recovers BACK to original entry price
             position['last_stop_loss_price'] = buy_price  # Re-enter at original buy price
             position['waiting_for_autobuy'] = True
+            position['last_checked_price'] = sell_price  # 🆕 Track starting price for crossover detection
+            position['highest_price_since_waiting'] = sell_price  # 🆕 Track highest price while waiting
             position['mode'] = f'Live Auto-Sell (Waiting for Auto-Buy at ₹{buy_price})'
             print(f"📉 LIVE LOSS STOP LOSS: Buy ₹{buy_price} → Sell ₹{sell_price} (Loss: ₹{buy_price - sell_price:.2f})")
             print(f"🎯 LIVE AUTO BUY SETUP: Will trigger when price recovers to ₹{position['last_stop_loss_price']} (original entry)")
+            print(f"📊 TRACKING: Starting price=₹{sell_price}, will monitor for crossover")
             
         else:
             # ✅ PROFIT/BREAK-EVEN STOP LOSS in LIVE TRADING: COMPLETE EXIT
@@ -1613,7 +1635,14 @@ def execute_auto_sell(position, reason='Stop Loss'):
             
             position['mode'] = f'LIVE EXITED (P&L: ₹{profit_loss:.2f})'
             position['waiting_for_autobuy'] = False  # No auto-buy on profit/break-even
+            position['sold'] = True  # Mark as sold
+            position['manual_sold'] = True  # Prevent any auto-buy attempts
             print(f"✅ LIVE POSITION EXITED: {position['type']} {position['strike']} closed - No auto-buy")
+            
+            # 🚨 CRITICAL: Remove profit-exited position from auto_positions
+            if position in app_state['auto_positions']:
+                app_state['auto_positions'].remove(position)
+                print(f"🗑️ REMOVED from auto_positions: {position['strike']} {position['type']} (profit/break-even exit)")
         
         # Common live trading stop loss processing
         position['realized_pnl'] = pnl
@@ -1773,11 +1802,11 @@ def execute_auto_buy(position):
                 tradingsymbol = td_to_zerodha_symbol(td_symbol)
             
             if tradingsymbol:
-                # Check if position exists in Zerodha
-                zerodha_qty = zerodha_positions.get(tradingsymbol, 0)
+                # Check if position exists in Zerodha (or was traded today)
+                zerodha_qty = zerodha_positions.get(tradingsymbol, None)
                 
-                if zerodha_qty == 0:
-                    print(f"[CIRCUIT BREAKER]  POSITION SYNC BLOCK: {tradingsymbol} not found in Zerodha!")
+                if zerodha_qty is None:  # Position NOT in Zerodha at all (truly manually closed)
+                    print(f"[CIRCUIT BREAKER] 🛡️ POSITION SYNC BLOCK: {tradingsymbol} not found in Zerodha!")
                     print(f"[CIRCUIT BREAKER] User may have manually closed this position in Zerodha app")
                     print(f"[CIRCUIT BREAKER] Removing position from auto_positions to prevent infinite loop")
                     
@@ -1801,6 +1830,9 @@ def execute_auto_buy(position):
                     })
                     
                     return False
+                elif zerodha_qty == 0:
+                    # Position exists but qty=0 (sold today) - ALLOW auto-buy
+                    print(f"[CIRCUIT BREAKER] ✅ Position verified in Zerodha (sold today): {tradingsymbol} qty=0 (waiting for auto-buy)")
                 else:
                     print(f"[CIRCUIT BREAKER] ✅ Position verified in Zerodha: {tradingsymbol} = {zerodha_qty} qty")
         
@@ -1876,24 +1908,39 @@ def execute_auto_buy(position):
     strike = position.get('strike', 'unknown')
     option_type = position.get('option_type', position.get('type', 'unknown'))
     
-    # Check if manually sold - absolute block
-    if position.get('manual_sold', False) or position.get('sold', False):
-        print(f"⚠️ AUTO BUY BLOCKED (MANUALLY SOLD): {strike} {option_type} (ID: {position_id})")
-        # Remove the position completely if it was manually sold
-        if position in app_state['auto_positions']:
-            app_state['auto_positions'].remove(position)
+    # 🆕 RACE CONDITION PROTECTION: Check if auto-buy is already in progress
+    if position.get('auto_buy_in_progress', False):
+        print(f"🚫 AUTO BUY BLOCKED (ALREADY IN PROGRESS): {strike} {option_type} (ID: {position_id})")
         return False
     
-    # Check if NOT waiting for auto buy
-    if not position.get('waiting_for_autobuy', False):
-        print(f"⚠️ AUTO BUY BLOCKED (NOT WAITING): {strike} {option_type} (ID: {position_id})")
-        return False
+    # Set flag IMMEDIATELY to prevent double execution
+    position['auto_buy_in_progress'] = True
     
-    # Check if position already has quantity (already bought)
-    current_qty = position.get('qty', position.get('quantity', 0))
-    if current_qty > 0:
-        print(f"⚠️ AUTO BUY BLOCKED (ALREADY HAS QTY {current_qty}): {strike} {option_type} (ID: {position_id})")
-        return False
+    try:
+        # Check if manually sold - absolute block
+        if position.get('manual_sold', False) or position.get('sold', False):
+            print(f"⚠️ AUTO BUY BLOCKED (MANUALLY SOLD): {strike} {option_type} (ID: {position_id})")
+            # Remove the position completely if it was manually sold
+            if position in app_state['auto_positions']:
+                app_state['auto_positions'].remove(position)
+            position['auto_buy_in_progress'] = False  # Clear flag
+            return False
+        
+        # Check if NOT waiting for auto buy
+        if not position.get('waiting_for_autobuy', False):
+            print(f"⚠️ AUTO BUY BLOCKED (NOT WAITING): {strike} {option_type} (ID: {position_id})")
+            position['auto_buy_in_progress'] = False  # Clear flag
+            return False
+        
+        # Check if position already has quantity (already bought)
+        current_qty = position.get('qty', position.get('quantity', 0))
+        if current_qty > 0:
+            print(f"⚠️ AUTO BUY BLOCKED (ALREADY HAS QTY {current_qty}): {strike} {option_type} (ID: {position_id})")
+            position['auto_buy_in_progress'] = False  # Clear flag
+            return False
+    except Exception as e:
+        position['auto_buy_in_progress'] = False  # Clear flag on error
+        raise e
     
     # 🚨 FIX: Auto buy price depends on phase
     # Phase 1: Buy at manual buy price (not current price!)
@@ -2008,6 +2055,8 @@ def execute_auto_buy(position):
                 'total_trades': len(app_state['paper_trade_history'])
             })
             
+            # 🚨 CLEAR AUTO-BUY IN PROGRESS FLAG
+            position['auto_buy_in_progress'] = False
             return True  # Return early, don't continue with normal auto buy
         
         # 🚨 CRITICAL: Clear all sold flags after successful auto buy and reset P&L
@@ -2080,6 +2129,9 @@ def execute_auto_buy(position):
         
         print(f"📄 AUTO BUY: {position.get('lots', 1)} lot(s) of {option_type} {position['strike']} @ ₹{buy_price:.2f} = ₹{total_cost:.2f}")
         print(f"📍 PAPER AUTO BUY: {position['strike']} {option_type} @ ₹{buy_price} | Stop Loss: ₹{position['stop_loss_price']} (Same as auto sell price)")
+        
+        # 🚨 CLEAR AUTO-BUY IN PROGRESS FLAG
+        position['auto_buy_in_progress'] = False
         return True
         
     else:
@@ -2099,6 +2151,7 @@ def execute_auto_buy(position):
             print(f"   Position ID: {position_id}")
             print(f"   Original quantity: {position.get('original_quantity', 'NOT SET')}")
             print(f"   Current qty: {position.get('qty', 0)}")
+            position['auto_buy_in_progress'] = False  # Clear flag
             return False
         
         cost = qty * buy_price
@@ -2199,7 +2252,8 @@ def execute_auto_buy(position):
             order_status = f"❌ {error_msg}"
             print(f"[ERROR] ❌❌❌ AUTO BUY FAILED after retries: {error_msg}")
             print(f"[ERROR] Strike: {position['strike']}, Type: {position['type']}, Price: ₹{buy_price}")
-            # Return False on failure
+            # Clear flag and return False on failure
+            position['auto_buy_in_progress'] = False
             return False
 
         # 🚨 CRITICAL FIX: Restore quantity after successful buy
@@ -2266,6 +2320,8 @@ def execute_auto_buy(position):
                 'time': dt.now().strftime('%Y-%m-%d %H:%M:%S')
             })
             
+            # 🚨 CLEAR AUTO-BUY IN PROGRESS FLAG
+            position['auto_buy_in_progress'] = False
             return True  # Return early, don't continue with normal auto buy
         elif position['auto_buy_count'] >= 5:
             # Cooldown is disabled (either individually or globally), continue normal trading
@@ -2370,6 +2426,8 @@ def execute_auto_buy(position):
             except Exception as e:
                 print(f"⚠️ Exception placing auto-buy protective SL: {e}")
         
+        # 🚨 CLEAR AUTO-BUY IN PROGRESS FLAG before final return
+        position['auto_buy_in_progress'] = False
         return True
 
 def get_active_positions_count():
@@ -2568,7 +2626,22 @@ def process_auto_trading():
             return
         
         # 🔥 DEBUG: Count positions waiting for auto buy
-        waiting_for_autobuy_count = sum(1 for pos in positions_to_monitor if pos.get('waiting_for_autobuy', False))
+        # 🚨 CRITICAL FIX: Only count positions EXPLICITLY waiting for auto buy
+        # DO NOT auto-flag qty=0 positions - they should be explicitly set by sell logic
+        waiting_for_autobuy_count = 0
+        for pos in positions_to_monitor:
+            is_waiting = pos.get('waiting_for_autobuy', False)
+            
+            # 🚨 NEW: Respect profit exit status - don't re-enable auto-buy for exited positions
+            is_exited_profitable = pos.get('status') in ['EXITED_PROFITABLE', 'EXITED_BREAKEVEN']
+            
+            if is_waiting and not is_exited_profitable:
+                waiting_for_autobuy_count += 1
+            elif is_exited_profitable and is_waiting:
+                # 🚨 CRITICAL: Force disable auto-buy for exited positions
+                pos['waiting_for_autobuy'] = False
+                print(f"� AUTO-BUY DISABLED: {pos.get('strike')} {pos.get('type', pos.get('option_type'))} was exited with profit/break-even - no auto-buy")
+        
         if waiting_for_autobuy_count > 0:
             print(f"⏳ {waiting_for_autobuy_count} positions waiting for auto buy in {trading_mode} mode")
         
@@ -2657,15 +2730,52 @@ def process_auto_trading():
                         if is_phase1_advanced:
                             # Phase 1 Advanced: Use manual buy price trigger
                             manual_buy_price = position.get('manual_buy_price', position.get('original_buy_price', 0))
-                            if current_price >= manual_buy_price:
-                                print(f"🟢 PHASE 1 AUTO BUY TRIGGERED: Price ₹{current_price} reached manual buy price ₹{manual_buy_price}")
+                            
+                            # 🚨 CRITICAL FIX: Check if price has CROSSED manual buy price
+                            # Track last price to detect crossover
+                            last_checked_price = position.get('last_checked_price', current_price)
+                            
+                            # 🔥 NEW LOGIC: Auto-buy triggers when:
+                            # 1. Price CROSSES ABOVE manual buy price (upward movement)
+                            # 2. Price is CURRENTLY AT OR ABOVE manual buy price
+                            auto_buy_buffer = 1.0  # ±1 rupee buffer for volatility
+                            
+                            # Check if price crossed the threshold going UP
+                            crossed_upward = (last_checked_price < manual_buy_price - auto_buy_buffer and 
+                                            current_price >= manual_buy_price - auto_buy_buffer)
+                            
+                            # Or if price is currently at/above the manual buy price
+                            at_or_above_target = current_price >= (manual_buy_price - auto_buy_buffer)
+                            
+                            # 🚨 NEW: Also check previous high - if we missed the crossover, catch it
+                            highest_since_wait = position.get('highest_price_since_waiting', current_price)
+                            if current_price > highest_since_wait:
+                                position['highest_price_since_waiting'] = current_price
+                                highest_since_wait = current_price
+                            
+                            # Trigger if price ever reached manual_buy_price while waiting
+                            ever_reached_target = highest_since_wait >= (manual_buy_price - auto_buy_buffer)
+                            
+                            price_reached_trigger = crossed_upward or at_or_above_target or ever_reached_target
+                            
+                            print(f"🔍 PHASE 1 AUTO BUY CHECK:")
+                            print(f"   Current=₹{current_price}, Last=₹{last_checked_price}, Highest=₹{highest_since_wait}")
+                            print(f"   Target=₹{manual_buy_price}, Buffer=±₹{auto_buy_buffer}")
+                            print(f"   Crossed↑={crossed_upward}, At/Above={at_or_above_target}, EverReached={ever_reached_target}")
+                            print(f"   🎯 TRIGGER={price_reached_trigger}")
+                            
+                            # Update last checked price for next iteration
+                            position['last_checked_price'] = current_price
+                            
+                            if price_reached_trigger:
+                                print(f"🟢 PHASE 1 AUTO BUY TRIGGERED: Price ₹{current_price} reached/crossed manual buy price ₹{manual_buy_price}")
                                 success = execute_auto_buy(position)
                                 if success:
-                                    print(f"✅ AUTO BUY EXECUTED: {position['strike']} {position['type']} successfully bought back")
+                                    print(f"✅ AUTO BUY EXECUTED: {position['strike']} {position['type']} successfully bought back at trigger")
                                 else:
                                     print(f"❌ AUTO BUY FAILED: {position['strike']} {position['type']} could not be bought back")
                             else:
-                                print(f"⏳ PHASE 1 WAITING: Current ₹{current_price} < Manual Buy ₹{manual_buy_price}")
+                                print(f"⏳ PHASE 1 WAITING: Current ₹{current_price} < Manual Buy ₹{manual_buy_price} (need ₹{manual_buy_price - current_price:.2f} more)")
                         else:
                             # Original logic for simple algorithm and Phase 2/3 advanced
                             # 🚨 FIXED AUTO BUY LOGIC: Buy when price comes back to or above the stop loss sell price
@@ -2959,15 +3069,22 @@ def sync_and_remove_manually_closed_positions():
         positions_data = app_state['kite'].positions()
         zerodha_positions = positions_data.get('net', [])
         
-        # Build a set of all active tradingsymbols in Zerodha
+        # Build a set of all active tradingsymbols in Zerodha (including qty=0 for today's trades)
         active_zerodha_symbols = set()
         for z_pos in zerodha_positions:
             qty = z_pos.get('quantity', 0)
-            if qty != 0:  # Only active positions
+            day_buy_qty = z_pos.get('day_buy_quantity', 0)
+            day_sell_qty = z_pos.get('day_sell_quantity', 0)
+            
+            # 🚨 CRITICAL FIX: Keep position if it has any day activity (buy or sell)
+            # This prevents false "manually closed" detection for auto-sold positions
+            if qty != 0 or day_buy_qty > 0 or day_sell_qty > 0:
                 symbol = z_pos.get('tradingsymbol', '')
                 active_zerodha_symbols.add(symbol)
+                if qty == 0 and (day_buy_qty > 0 or day_sell_qty > 0):
+                    print(f"[POSITION SYNC] ✅ Keeping {symbol} with qty=0 (day activity: buy={day_buy_qty}, sell={day_sell_qty})")
         
-        print(f"[POSITION SYNC] Active Zerodha positions: {len(active_zerodha_symbols)}")
+        print(f"[POSITION SYNC] Active Zerodha positions (including today's closed): {len(active_zerodha_symbols)}")
         
         # Check all webapp positions
         positions_to_check = []
@@ -4399,7 +4516,7 @@ def api_expiry_list(symbol):
     expiry_url = f"https://history.truedata.in/getSymbolExpiryList?symbol={symbol}&response=csv"
     headers = {
         "accept": "application/json",
-        "authorization": "Bearer iHan4CKT9XclyKtjU2Cuk1rN9ymGxoIG3KJd5AkgcauPEOQUiY0EI571RlyTn6nEikiNU-AG3g-ZsRmpxjer2Z4hRQ_QU7TkVClvBrq3HxmNYsnzVc_xvnqRONvUNvdF3N-HRLrLn9-TNeXTJAZpZ2wSrPj4O2IQ6ZKvbqUTSOOifW9_dI3tFbdU51ZUm4GcjRtUa21ynTElmm1Ju0coemJsdqzbRTK1-3WCaHYkRE1SZhLuv7C008P4PAGCangZK9vQS74BgjWRMiO1BEG1NA"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
+        "authorization": "Bearer y6i612OHCBcqpROE5r2HXNnw0LsQE1Fqg16eXfXgzAmUvb4LwXakH8yIMrRrjyOmPQOpuG5wQQVdt_dp1d5tmvLDobAQv3olYh3KmY_Hff0Wb6kBOw6Kl5rPq0TcphHywL_oJ5V7zLcoNgsEnmgJIKrxNoG3Se6teC0oMtozE4MoiaDODP3QQ555wsjFp9HYg-Z94K4quy0lmd-pLjPZU8JcQQRAxgMvRMPlyRNLJBuokORa2BtBfdmgNvuKvLLnfuzFt9yxY54qDK90SNtMGQ"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
     }
     
     try:
@@ -5629,13 +5746,41 @@ def api_positions():
         current_option_data = app_state.get('current_option_data', {})
         print(f"[DEBUG] Live Trading - Option chain data available: {bool(current_option_data)}")
         
-        # 🔥 FILTER OUT CLOSED POSITIONS (qty=0) to prevent negative SL display
+        # 🔥 CRITICAL FIX: Check if position should be kept for auto-buy monitoring
+        # Don't skip qty=0 positions that are waiting for auto-buy!
         all_positions = []
         for pos in net_positions:
-            # Skip positions with quantity = 0 (already sold/closed)
-            if int(pos['quantity']) == 0:
-                print(f"[DEBUG] Skipping closed position: {pos['tradingsymbol']} qty=0")
+            qty = int(pos['quantity'])
+            tradingsymbol = pos['tradingsymbol']
+            
+            # Extract strike and option_type from tradingsymbol
+            strike = pos.get('strike', None)
+            option_type = pos.get('option_type', None)
+            if not strike or not option_type:
+                m = re.search(r'(\d+)(CE|PE)$', tradingsymbol)
+                if m:
+                    strike = int(m.group(1))
+                    option_type = m.group(2)
+            
+            # 🚨 CRITICAL FIX: Check if this position exists in auto_positions (active OR waiting for auto-buy)
+            is_in_auto_positions = False
+            is_waiting_for_autobuy = False
+            for auto_pos in app_state.get('auto_positions', []):
+                auto_strike = float(auto_pos.get('strike', 0))
+                auto_type = auto_pos.get('type', auto_pos.get('option_type'))
+                if float(strike) == auto_strike and option_type == auto_type:
+                    is_in_auto_positions = True
+                    is_waiting_for_autobuy = auto_pos.get('waiting_for_autobuy', False)
+                    if is_in_auto_positions:
+                        print(f"[DEBUG] ✅ FOUND IN AUTO_POSITIONS: {tradingsymbol} qty={qty}, waiting_for_autobuy={is_waiting_for_autobuy}")
+                    break
+            
+            # Skip ONLY if qty=0 AND NOT in auto_positions at all
+            if qty == 0 and not is_in_auto_positions:
+                print(f"[DEBUG] Skipping closed position: {tradingsymbol} qty=0, not in auto_positions")
                 continue
+            elif qty == 0 and is_in_auto_positions:
+                print(f"[DEBUG] ⏳ KEEPING POSITION: {tradingsymbol} qty=0 but exists in auto_positions (waiting_for_autobuy={is_waiting_for_autobuy})")
                 
             print(f"[DEBUG] Checking position: {pos['tradingsymbol']} qty={pos['quantity']}")
             
@@ -5718,10 +5863,11 @@ def api_positions():
                 if not auto_pos_found and int(pos['quantity']) > 0:
                     print(f"🆕 LIVE: Creating auto position for existing Zerodha position {strike} {option_type}")
                     try:
-                        # Get expiry from tradingsymbol (e.g., "NIFTY25OCT25900CE" -> extract date)
-                        # Note: re and datetime are already imported at the top of the file
+                        tradingsymbol = pos['tradingsymbol']
                         
-                        symbol_match = re.match(r'^([A-Z]+)(\d{2})([A-Z]{3})(\d+)(CE|PE)$', pos['tradingsymbol'])
+                        # Extract from tradingsymbol pattern (e.g., BANKNIFTY25NOV59400PE)
+                        # Format: SYMBOL + YY + MMM + STRIKE + CE/PE
+                        symbol_match = re.match(r'^([A-Z]+)(\d{2})([A-Z]{3})(\d+)(CE|PE)$', tradingsymbol)
                         if symbol_match:
                             base_symbol = symbol_match.group(1)
                             yy = symbol_match.group(2)
@@ -5731,10 +5877,20 @@ def api_positions():
                             month_map = {'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
                                        'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12}
                             month = month_map.get(month_str, 1)
-                            day = int(symbol_match.group(4)[:2])  # First 2 digits of strike might be day
                             year = 2000 + int(yy)
                             
+                            # 🚨 CRITICAL FIX: Calculate last Thursday of the month (Indian options expiry)
+                            import calendar
+                            # Find last day of month
+                            last_day = calendar.monthrange(year, month)[1]
+                            last_date = datetime(year, month, last_day)
+                            # Find last Thursday (weekday 3)
+                            while last_date.weekday() != 3:  # 3 = Thursday
+                                last_date -= timedelta(days=1)
+                            
+                            day = last_date.day
                             expiry_date = f"{year}-{month:02d}-{day:02d}"
+                            print(f"✅ LIVE: Calculated expiry (last Thursday of {month_str} {year}): {expiry_date}")
                             
                             # Create auto position
                             auto_pos = create_auto_position(
@@ -5746,8 +5902,12 @@ def api_positions():
                                 expiry=expiry_date
                             )
                             print(f"✅ LIVE: Auto position created for {strike} {option_type} with SL ₹{stop_loss_val:.2f}")
+                        else:
+                            print(f"⚠️ LIVE: Could not parse tradingsymbol format: {tradingsymbol}")
                     except Exception as e:
                         print(f"⚠️ LIVE: Could not create auto position: {e}")
+                        import traceback
+                        traceback.print_exc()
             
             if not auto_pos_found:
                 print(f"⚠️ LIVE: No auto position found for {strike} {option_type}, using default SL")
@@ -5778,12 +5938,24 @@ def api_positions():
         
         # 🔥 FIX: Add ONLY auto positions that have qty > 0 AND are NOT in Zerodha positions yet
         # This prevents duplicates while showing positions immediately after buying
+        
+        # 🚨 CRITICAL FIX: Normalize all strikes to float to prevent duplicates (25800.0 == 25800)
+        seen_positions = set()  # Track (strike, option_type) pairs
+        
         for auto_pos in app_state.get('auto_positions', []):
-            strike = auto_pos.get('strike')
+            strike = float(auto_pos.get('strike', 0))  # Normalize to float
             option_type = auto_pos.get('type', auto_pos.get('option_type'))
             qty = auto_pos.get('qty', auto_pos.get('quantity', 0))
             
+            # 🚨 NEW: Create unique key for duplicate detection
+            position_key = (strike, option_type)
+            
             print(f"[DEBUG] Checking auto_pos: strike={strike}, type={option_type}, qty={qty}")
+            
+            # 🚨 NEW: Skip duplicate auto_positions (same strike + type)
+            if position_key in seen_positions:
+                print(f"[DEBUG] DUPLICATE auto_pos found: {strike} {option_type} - SKIPPING")
+                continue
             
             # Skip if waiting for auto-buy (qty = 0)
             if qty <= 0 and not auto_pos.get('waiting_for_autobuy', False):
@@ -5793,14 +5965,17 @@ def api_positions():
             # Check if this position is already in all_positions (from Zerodha)
             already_in = False
             for pos in all_positions:
-                if (str(pos.get('strike')) == str(auto_pos.get('strike')) and 
-                    pos.get('option_type') == auto_pos.get('type', auto_pos.get('option_type')) and
-                    int(pos.get('quantity', 0)) > 0):  # Only match if Zerodha has qty > 0
+                pos_strike = float(pos.get('strike', 0))  # Normalize to float
+                if (pos_strike == strike and 
+                    pos.get('option_type') == option_type):
+                    # 🚨 CRITICAL FIX: If Zerodha has this position, ALWAYS skip auto_pos (even if qty=0)
+                    # This prevents showing duplicate entries
                     already_in = True
-                    print(f"[DEBUG] Auto_pos {strike} {option_type} already in Zerodha positions - SKIPPING to avoid duplicate")
+                    print(f"[DEBUG] Auto_pos {strike} {option_type} already in Zerodha positions (qty={pos.get('quantity', 0)}) - SKIPPING to avoid duplicate")
                     break
             
             if not already_in:
+                seen_positions.add(position_key)  # Mark as seen
                 print(f"[DEBUG] Auto_pos {strike} {option_type} NOT in Zerodha - adding to display")
                 # Get live price from option chain data
                 strike = auto_pos.get('strike')
@@ -5859,7 +6034,7 @@ def api_positions():
                         'id': auto_pos.get('id')
                     }
                     all_positions.append(position_from_auto)
-                    print(f"✅ LIVE: Added auto position {strike} {option_type} to display (qty={qty_display}, SL=₹{sl_price:.2f})")
+                    print(f"✅ LIVE: Added auto position {strike} {option_type} to display (qty={qty_display}, waiting_for_autobuy={auto_pos.get('waiting_for_autobuy', False)}, SL=₹{sl_price:.2f})")
         
         return jsonify({
             'success': True,
@@ -7363,7 +7538,7 @@ def api_auto_start_option_chain():
         expiry_url = f"https://history.truedata.in/getSymbolExpiryList?symbol={symbol}&response=csv"
         headers = {
             "accept": "application/json",
-            "authorization": "Bearer iHan4CKT9XclyKtjU2Cuk1rN9ymGxoIG3KJd5AkgcauPEOQUiY0EI571RlyTn6nEikiNU-AG3g-ZsRmpxjer2Z4hRQ_QU7TkVClvBrq3HxmNYsnzVc_xvnqRONvUNvdF3N-HRLrLn9-TNeXTJAZpZ2wSrPj4O2IQ6ZKvbqUTSOOifW9_dI3tFbdU51ZUm4GcjRtUa21ynTElmm1Ju0coemJsdqzbRTK1-3WCaHYkRE1SZhLuv7C008P4PAGCangZK9vQS74BgjWRMiO1BEG1NA"  # REPLACE THIS WITH YOUR REAL TOKEN
+            "authorization": "Bearer y6i612OHCBcqpROE5r2HXNnw0LsQE1Fqg16eXfXgzAmUvb4LwXakH8yIMrRrjyOmPQOpuG5wQQVdt_dp1d5tmvLDobAQv3olYh3KmY_Hff0Wb6kBOw6Kl5rPq0TcphHywL_oJ5V7zLcoNgsEnmgJIKrxNoG3Se6teC0oMtozE4MoiaDODP3QQ555wsjFp9HYg-Z94K4quy0lmd-pLjPZU8JcQQRAxgMvRMPlyRNLJBuokORa2BtBfdmgNvuKvLLnfuzFt9yxY54qDK90SNtMGQ"  # REPLACE THIS WITH YOUR REAL TOKEN
         }
         
         response = requests.get(expiry_url, headers=headers)
