@@ -4516,7 +4516,7 @@ def api_expiry_list(symbol):
     expiry_url = f"https://history.truedata.in/getSymbolExpiryList?symbol={symbol}&response=csv"
     headers = {
         "accept": "application/json",
-        "authorization": "Bearer y6i612OHCBcqpROE5r2HXNnw0LsQE1Fqg16eXfXgzAmUvb4LwXakH8yIMrRrjyOmPQOpuG5wQQVdt_dp1d5tmvLDobAQv3olYh3KmY_Hff0Wb6kBOw6Kl5rPq0TcphHywL_oJ5V7zLcoNgsEnmgJIKrxNoG3Se6teC0oMtozE4MoiaDODP3QQ555wsjFp9HYg-Z94K4quy0lmd-pLjPZU8JcQQRAxgMvRMPlyRNLJBuokORa2BtBfdmgNvuKvLLnfuzFt9yxY54qDK90SNtMGQ"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
+        "authorization": "Bearer e6mOl1YUYQKVtmd49F-Y768r5jFS8l0WSwAWwe75OQTXPpsP4k7_lkeLdJEGAof8lIRbgh9PnUVXrEjOu4D7hD3VM5n3ReLhrwffvXYMGiFD8x36vIHMz0fUd8XEtgwNl3i3i6U7xN0TQ7WgmIXn3O6b4pmHmw1ApvMIvp9c6mzmUUQbHe3UMipk9ALQuroA8laPxTa0sKfRCXXQDz7Rgzhz4w2jYp3PsjauzOHLGmkVi-SN1nHrCovXmvcIYQ5zPKo8mSroQX-R9ZHZ4Gd9wg"  # 🔴 REPLACE THIS WITH YOUR REAL TOKEN
     }
     
     try:
@@ -5824,11 +5824,13 @@ def api_positions():
             stop_loss_val = None  # Use None instead of 'No SL'
             status = 'Active'
             auto_buy_count = 0
-            auto_pos_found = None
+            auto_pos_found = False  # Changed to boolean flag
+            matched_auto_pos = None  # Store the matched auto position
             
             for auto_pos in app_state.get('auto_positions', []):
                 if str(auto_pos.get('strike')) == str(strike) and auto_pos.get('type', auto_pos.get('option_type')) == option_type:
-                    auto_pos_found = auto_pos
+                    auto_pos_found = True
+                    matched_auto_pos = auto_pos  # Store the matched position
                     
                     # 🔥 CRITICAL: Update auto position with live price for algorithm
                     if live_price != auto_pos.get('current_price', 0):
@@ -5915,6 +5917,16 @@ def api_positions():
             # Calculate P&L with live price
             pnl = (live_price - float(pos['average_price'])) * int(pos['quantity'])
             
+            # 🚨 CRITICAL: Check if this position has waiting_for_autobuy flag
+            waiting_for_autobuy = False
+            original_quantity = 0
+            position_id = None
+            if auto_pos_found and matched_auto_pos:
+                waiting_for_autobuy = matched_auto_pos.get('waiting_for_autobuy', False)
+                original_quantity = matched_auto_pos.get('original_quantity', int(pos['quantity']))
+                position_id = matched_auto_pos.get('id')
+                print(f"🔥 LIVE: Position {strike} {option_type} has waiting_for_autobuy={waiting_for_autobuy}, qty={int(pos['quantity'])}")
+            
             position_data = {
                 'tradingsymbol': pos['tradingsymbol'],
                 'quantity': int(pos['quantity']),
@@ -5929,7 +5941,10 @@ def api_positions():
                 'option_type': option_type,
                 'stop_loss_price': stop_loss_val,  # 🔥 Show stop loss from auto position
                 'status': status,
-                'auto_buy_count': auto_buy_count
+                'auto_buy_count': auto_buy_count,
+                'waiting_for_autobuy': waiting_for_autobuy,  # 🔥 Add this critical field
+                'original_quantity': original_quantity,  # For displaying sold qty
+                'id': position_id  # For cancel button
             }
             all_positions.append(position_data)
         
@@ -5968,11 +5983,21 @@ def api_positions():
                 pos_strike = float(pos.get('strike', 0))  # Normalize to float
                 if (pos_strike == strike and 
                     pos.get('option_type') == option_type):
-                    # 🚨 CRITICAL FIX: If Zerodha has this position, ALWAYS skip auto_pos (even if qty=0)
-                    # This prevents showing duplicate entries
-                    already_in = True
-                    print(f"[DEBUG] Auto_pos {strike} {option_type} already in Zerodha positions (qty={pos.get('quantity', 0)}) - SKIPPING to avoid duplicate")
-                    break
+                    # 🚨 CRITICAL FIX: Only skip auto_pos if it has qty > 0 (active position)
+                    # If waiting_for_autobuy=True, we MUST show it even if Zerodha has qty=0
+                    if pos.get('quantity', 0) > 0:
+                        already_in = True
+                        print(f"[DEBUG] Auto_pos {strike} {option_type} already in Zerodha positions (qty={pos.get('quantity', 0)}) - SKIPPING to avoid duplicate")
+                        break
+                    else:
+                        # Zerodha has qty=0, check if we're waiting for auto-buy
+                        if not auto_pos.get('waiting_for_autobuy', False):
+                            already_in = True
+                            print(f"[DEBUG] Auto_pos {strike} {option_type} has qty=0 in Zerodha and not waiting - SKIPPING")
+                            break
+                        else:
+                            # waiting_for_autobuy=True, we should show it!
+                            print(f"🔥 [DEBUG] Auto_pos {strike} {option_type} waiting for auto-buy - WILL SHOW even though Zerodha has qty=0")
             
             if not already_in:
                 seen_positions.add(position_key)  # Mark as seen
@@ -7538,7 +7563,7 @@ def api_auto_start_option_chain():
         expiry_url = f"https://history.truedata.in/getSymbolExpiryList?symbol={symbol}&response=csv"
         headers = {
             "accept": "application/json",
-            "authorization": "Bearer y6i612OHCBcqpROE5r2HXNnw0LsQE1Fqg16eXfXgzAmUvb4LwXakH8yIMrRrjyOmPQOpuG5wQQVdt_dp1d5tmvLDobAQv3olYh3KmY_Hff0Wb6kBOw6Kl5rPq0TcphHywL_oJ5V7zLcoNgsEnmgJIKrxNoG3Se6teC0oMtozE4MoiaDODP3QQ555wsjFp9HYg-Z94K4quy0lmd-pLjPZU8JcQQRAxgMvRMPlyRNLJBuokORa2BtBfdmgNvuKvLLnfuzFt9yxY54qDK90SNtMGQ"  # REPLACE THIS WITH YOUR REAL TOKEN
+            "authorization": "Bearer e6mOl1YUYQKVtmd49F-Y768r5jFS8l0WSwAWwe75OQTXPpsP4k7_lkeLdJEGAof8lIRbgh9PnUVXrEjOu4D7hD3VM5n3ReLhrwffvXYMGiFD8x36vIHMz0fUd8XEtgwNl3i3i6U7xN0TQ7WgmIXn3O6b4pmHmw1ApvMIvp9c6mzmUUQbHe3UMipk9ALQuroA8laPxTa0sKfRCXXQDz7Rgzhz4w2jYp3PsjauzOHLGmkVi-SN1nHrCovXmvcIYQ5zPKo8mSroQX-R9ZHZ4Gd9wg"  # REPLACE THIS WITH YOUR REAL TOKEN
         }
         
         response = requests.get(expiry_url, headers=headers)
